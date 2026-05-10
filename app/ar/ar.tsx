@@ -1,82 +1,67 @@
-import { useNavigation } from "@react-navigation/native";
-import { CameraView, useCameraPermissions } from "expo-camera";
-import { Image } from "expo-image"; // supports GIFs
-import { useEffect } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+// @ts-nocheck
 
-export default function ARScreen() {
-  const [permission, requestPermission] = useCameraPermissions();
-  const navigation = useNavigation();
+import { GLView } from "expo-gl";
+import { Renderer } from "expo-three";
+import { useRef } from "react";
+import { View } from "react-native";
 
-  useEffect(() => {
-    if (!permission?.granted) {
-      requestPermission();
-    }
-  }, []);
+const THREE = require("three");
 
-  if (!permission) {
-    return <View />;
-  }
+export default function ARViewer() {
+  const animationRef = useRef(null);
 
-  if (!permission.granted) {
-    return (
-      <View style={styles.center}>
-        <Text>Camera permission required</Text>
-      </View>
+  const onContextCreate = async (gl) => {
+    const { drawingBufferWidth: width, drawingBufferHeight: height } = gl;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf2f2f2);
+
+    const camera = new THREE.PerspectiveCamera(
+      75,
+      width / height,
+      0.1,
+      1000
     );
-  }
+
+    camera.position.z = 5;
+
+    const renderer = new Renderer({ gl });
+    renderer.setSize(width, height);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    scene.add(ambientLight);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(0, 5, 5);
+    scene.add(directionalLight);
+
+    const geometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x00ff00,
+      roughness: 0.4,
+      metalness: 0.2,
+    });
+
+    const cube = new THREE.Mesh(geometry, material);
+    scene.add(cube);
+
+    const render = () => {
+      animationRef.current = requestAnimationFrame(render);
+
+      cube.rotation.x += 0.01;
+      cube.rotation.y += 0.01;
+
+      renderer.render(scene, camera);
+      gl.endFrameEXP();
+    };
+
+    render();
+  };
 
   return (
-    <View style={styles.container}>
-      <CameraView style={styles.camera} />
-
-      {/* 🔥 OVERLAY GIF FROM URL */}
-      <View style={styles.overlay}>
-        <Image
-          source={{ uri: "https://media.tenor.com/Mdz2s-fOMggAAAAi/the-fragrant-flower-blooms-with-dignity-kaoruko-waguri.gif"}} // 👈 your GIF URL
-          style={styles.image}
-          contentFit="contain"
-        />
-         <Image
-          source={{ uri: "https://media.tenor.com/KkqIDLfXSpwAAAAi/synesthesia.gif"}} //  GIF URL
-          style={styles.image}
-          contentFit="contain"
-        />
-      </View>
-
-      {/*  GO BACK BUTTON */}
-      <TouchableOpacity
-        style={styles.goBackButton}
-        onPress={() => navigation.goBack()}
-      >
-        <Text style={styles.goBackText}>Go Back</Text>
-      </TouchableOpacity>
+    <View style={{ flex: 1 }}>
+      <GLView style={{ flex: 1 }} onContextCreate={onContextCreate} />
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  camera: { flex: 1 },
-  overlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  image: { width: 200, height: 200, opacity: 0.9 },
-  center: { flex: 1, justifyContent: "center", alignItems: "center" },
-  goBackButton: {
-    position: "absolute",
-    top: 40, // a bit below the status bar
-    left: 20,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    borderRadius: 8,
-  },
-  goBackText: { color: "#fff", fontSize: 16 },
-});

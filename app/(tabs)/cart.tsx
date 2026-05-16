@@ -1,11 +1,13 @@
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import {
   doc,
-  onSnapshot,
+  getDoc,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import {
+  ActivityIndicator,
   Image,
   ScrollView,
   StyleSheet,
@@ -15,39 +17,100 @@ import {
 } from "react-native";
 import { auth, db } from "../../firebaseConfig";
 
+const productImages: any = {
+  "click160-front-side-matte-red": require("../../assets/images/Product_Images/hondaClick160FrontSideMatteRed.jpg"),
+  "click160-front-side-matte-black": require("../../assets/images/Product_Images/hondaClick160FrontSideMatteBlack.jpg"),
+  "click160-front-cover-matte-red": require("../../assets/images/Product_Images/hondaClick160FrontCoverMatteRed.jpg"),
+  "click160-front-cover-matte-black": require("../../assets/images/Product_Images/hondaClick160FrontCoverMatteBlack.jpg"),
+  "click160-front-fender-glossy-black": require("../../assets/images/Product_Images/hondaClick160FrontFenderGlossyBlack.jpg"),
+  "click160-front-cover-right-white": require("../../assets/images/Product_Images/hondaClick160FrontCoverRigthWhite.jpg"),
+  "adv160-front-center-cover": require("../../assets/images/Product_Images/hondaAdv160frontcentercover.jpg"),
+  "adv160-front-side-left-black": require("../../assets/images/Product_Images/hondaAdv160FrontSideLeftBlack.jpg"),
+  "adv160-cover-front-upper-matte-red": require("../../assets/images/Product_Images/hondaAdv160coverFrontupperMatteRed.jpg"),
+  "adv160-front-fender-matte-black": require("../../assets/images/Product_Images/hondaAdv160frontFenderMatteBlack.jpg"),
+};
+
 export default function Cart() {
   const router = useRouter();
   const user = auth.currentUser;
 
   const [cartItems, setCartItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // 🔥 REAL-TIME LISTENER
-  useEffect(() => {
-    if (!user) return;
+  const cleanOldCartItems = (items: any[]) => {
+    return items.map((item: any) => {
+      const cleaned = { ...item };
+      delete cleaned.image;
+      return cleaned;
+    });
+  };
 
-    const cartRef = doc(db, "carts", user.uid);
+  const loadCart = async () => {
+    if (!user) {
+      setCartItems([]);
+      setLoading(false);
+      return;
+    }
 
-    const unsubscribe = onSnapshot(cartRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setCartItems(docSnap.data().items || []);
+    try {
+      setLoading(true);
+
+      const cartRef = doc(db, "carts", user.uid);
+      const cartSnap = await getDoc(cartRef);
+
+      if (cartSnap.exists()) {
+        const items = cartSnap.data().items || [];
+        const cleanedItems = cleanOldCartItems(items);
+
+        setCartItems(cleanedItems);
+
+        const hadOldImages = items.some((item: any) => item.image);
+        if (hadOldImages) {
+          await updateDoc(cartRef, { items: cleanedItems });
+        }
       } else {
         setCartItems([]);
       }
-    });
+    } catch (error) {
+      console.log("Cart load error:", error);
+      setCartItems([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    return () => unsubscribe(); // cleanup
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      loadCart();
+    }, [user])
+  );
 
-  // 🔥 REMOVE ITEM (WITH QUANTITY)
-  const removeItem = async (productId: string) => {
+  const saveCart = async (updatedItems: any[]) => {
     if (!user) return;
 
     const cartRef = doc(db, "carts", user.uid);
 
-    let updated = [...cartItems];
+    try {
+      const cleanedItems = cleanOldCartItems(updatedItems);
+      const cartSnap = await getDoc(cartRef);
+
+      if (cartSnap.exists()) {
+        await updateDoc(cartRef, { items: cleanedItems });
+      } else {
+        await setDoc(cartRef, { items: cleanedItems });
+      }
+
+      setCartItems(cleanedItems);
+    } catch (error) {
+      console.log("Cart save error:", error);
+    }
+  };
+
+  const removeItem = async (productId: string) => {
+    const updated = [...cartItems];
 
     const index = updated.findIndex(
-      (item) => item.productId === productId
+      (item: any) => item.productId === productId
     );
 
     if (index >= 0) {
@@ -58,11 +121,11 @@ export default function Cart() {
       }
     }
 
-    await updateDoc(cartRef, { items: updated });
+    await saveCart(updated);
   };
 
   const total = cartItems.reduce(
-    (sum, item) => sum + item.price * item.quantity,
+    (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
     0
   );
 
@@ -70,39 +133,72 @@ export default function Cart() {
     <View style={styles.container}>
       <Text style={styles.title}>My Cart</Text>
 
-      <ScrollView>
-        {cartItems.length === 0 && (
-          <Text style={{ textAlign: "center", marginTop: 20 }}>
-            Cart is empty 🛒
-          </Text>
-        )}
+      {loading ? (
+        <View style={styles.centerBox}>
+          <ActivityIndicator size="large" color="#111" />
+          <Text style={styles.loadingText}>Loading cart...</Text>
+        </View>
+      ) : (
+        <ScrollView showsVerticalScrollIndicator={false}>
+          {cartItems.length === 0 && (
+            <Text style={styles.emptyText}>Cart is empty</Text>
+          )}
 
-        {cartItems.map((item) => (
-          <View key={item.productId} style={styles.card}>
-            <Image source={item.image} style={styles.image} />
+          {cartItems.map((item) => {
+            const itemImage = productImages[item.imageKey];
 
-            <View style={{ flex: 1 }}>
-              <Text style={styles.itemName}>{item.name}</Text>
-              <Text style={styles.itemPrice}>
-                {item.quantity} × ₱{item.price}
-              </Text>
+            return (
+              <View key={item.productId} style={styles.card}>
+                {itemImage ? (
+                  <Image source={itemImage} style={styles.image} />
+                ) : (
+                  <View style={styles.imagePlaceholder}>
+                    <Text style={styles.imagePlaceholderText}>Item</Text>
+                  </View>
+                )}
 
-              <TouchableOpacity
-                style={styles.removeButton}
-                onPress={() => removeItem(item.productId)}
-              >
-                <Text style={styles.removeText}>Remove</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        ))}
-      </ScrollView>
+                <View style={styles.itemInfo}>
+                  <Text style={styles.itemName}>{item.name}</Text>
+
+                  <Text style={styles.itemPrice}>
+                    {item.quantity} × ₱{item.price}
+                  </Text>
+
+                  {item.color && (
+                    <Text style={styles.variantText}>Color: {item.color}</Text>
+                  )}
+
+                  {item.side && (
+                    <Text style={styles.variantText}>Side: {item.side}</Text>
+                  )}
+
+                  <TouchableOpacity
+                    style={styles.removeButton}
+                    onPress={() => removeItem(item.productId)}
+                  >
+                    <Text style={styles.removeText}>
+                      {item.quantity > 1 ? "Remove 1" : "Remove"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          })}
+        </ScrollView>
+      )}
 
       <View style={styles.footer}>
-        <Text style={styles.total}>₱{total}</Text>
+        <View>
+          <Text style={styles.totalLabel}>Total</Text>
+          <Text style={styles.total}>₱{total}</Text>
+        </View>
 
         <TouchableOpacity
-          style={styles.checkoutButton}
+          style={[
+            styles.checkoutButton,
+            cartItems.length === 0 && styles.checkoutButtonDisabled,
+          ]}
+          disabled={cartItems.length === 0}
           onPress={() => router.push("/checkout")}
         >
           <Text style={styles.checkoutText}>Checkout</Text>
@@ -114,64 +210,24 @@ export default function Cart() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8F9FB", padding: 16 },
-
-  title: {
-    fontSize: 24,
-    fontWeight: "700",
-    marginBottom: 16,
-  },
-
-  card: {
-    flexDirection: "row",
-    backgroundColor: "#fff",
-    borderRadius: 14,
-    padding: 10,
-    marginBottom: 12,
-  },
-
-  image: {
-    width: 80,
-    height: 80,
-    borderRadius: 10,
-    marginRight: 10,
-  },
-
-  itemName: { fontSize: 14, fontWeight: "600" },
-  itemPrice: { fontSize: 13, color: "#666", marginVertical: 4 },
-
-  removeButton: {
-    backgroundColor: "#FF3B30",
-    padding: 6,
-    borderRadius: 6,
-    alignSelf: "flex-start",
-  },
-
-  removeText: {
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-
-  footer: { marginTop: 10 },
-
-  total: {
-    fontSize: 20,
-    fontWeight: "700",
-    textAlign: "right",
-    marginBottom: 10,
-    color: "green",
-  },
-
-  checkoutButton: {
-    backgroundColor: "#111",
-    padding: 16,
-    borderRadius: 12,
-    alignItems: "center",
-  },
-
-  checkoutText: {
-    color: "#fff",
-    fontWeight: "600",
-    fontSize: 16,
-  },
+  title: { fontSize: 24, fontWeight: "700", marginBottom: 16 },
+  centerBox: { flex: 1, justifyContent: "center", alignItems: "center" },
+  loadingText: { marginTop: 10, fontSize: 13, color: "#666" },
+  emptyText: { textAlign: "center", marginTop: 30, fontSize: 14, color: "#777" },
+  card: { flexDirection: "row", backgroundColor: "#fff", borderRadius: 16, padding: 12, marginBottom: 12, elevation: 2 },
+  image: { width: 86, height: 86, borderRadius: 12, marginRight: 12, resizeMode: "cover", backgroundColor: "#eee" },
+  imagePlaceholder: { width: 86, height: 86, borderRadius: 12, marginRight: 12, backgroundColor: "#eee", justifyContent: "center", alignItems: "center" },
+  imagePlaceholderText: { fontSize: 12, color: "#777", fontWeight: "600" },
+  itemInfo: { flex: 1 },
+  itemName: { fontSize: 14, fontWeight: "700", color: "#111" },
+  itemPrice: { fontSize: 13, color: "#555", marginTop: 4 },
+  variantText: { fontSize: 12, color: "#777", marginTop: 2 },
+  removeButton: { backgroundColor: "#FF3B30", paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, alignSelf: "flex-start", marginTop: 8 },
+  removeText: { color: "#fff", fontSize: 12, fontWeight: "600" },
+  footer: { marginTop: 10, backgroundColor: "#fff", padding: 14, borderRadius: 16, elevation: 3 },
+  totalLabel: { fontSize: 13, color: "#777" },
+  total: { fontSize: 22, fontWeight: "800", color: "#1E8E3E", marginBottom: 12 },
+  checkoutButton: { backgroundColor: "#111", padding: 16, borderRadius: 12, alignItems: "center" },
+  checkoutButtonDisabled: { backgroundColor: "#999" },
+  checkoutText: { color: "#fff", fontWeight: "700", fontSize: 16 },
 });

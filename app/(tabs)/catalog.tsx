@@ -97,7 +97,9 @@ export default function Catalog() {
         productId: variantId,
         name: finalName,
         price: product.price,
-        image: variant.image,
+        imageKey: variant.imageKey,
+        color: variant.color,
+        side: product.hasSide ? state.side : null,
         quantity: 1,
       };
     } else {
@@ -105,7 +107,7 @@ export default function Catalog() {
         productId: product.id,
         name: product.name,
         price: product.price,
-        image: product.image,
+        imageKey: product.imageKey,
         quantity: 1,
       };
     }
@@ -116,7 +118,13 @@ export default function Catalog() {
     if (!cartSnap.exists()) {
       await setDoc(cartRef, { items: [newItem] });
     } else {
-      const items = cartSnap.data().items || [];
+      const rawItems = cartSnap.data().items || [];
+
+      const items = rawItems.map((item: any) => {
+        const cleaned = { ...item };
+        delete cleaned.image;
+        return cleaned;
+      });
 
       const index = items.findIndex(
         (item: any) => item.productId === newItem.productId
@@ -144,10 +152,12 @@ export default function Catalog() {
       variants: [
         {
           color: "Matte Red",
+          imageKey: "click160-front-side-matte-red",
           image: require("../../assets/images/Product_Images/hondaClick160FrontSideMatteRed.jpg"),
         },
         {
           color: "Matte Black",
+          imageKey: "click160-front-side-matte-black",
           image: require("../../assets/images/Product_Images/hondaClick160FrontSideMatteBlack.jpg"),
         },
       ],
@@ -160,10 +170,12 @@ export default function Catalog() {
       variants: [
         {
           color: "Matte Red",
+          imageKey: "click160-front-cover-matte-red",
           image: require("../../assets/images/Product_Images/hondaClick160FrontCoverMatteRed.jpg"),
         },
         {
           color: "Matte Black",
+          imageKey: "click160-front-cover-matte-black",
           image: require("../../assets/images/Product_Images/hondaClick160FrontCoverMatteBlack.jpg"),
         },
       ],
@@ -172,12 +184,14 @@ export default function Catalog() {
       id: "c3",
       name: "Click 160 Front Fender Glossy Black",
       price: 2500,
+      imageKey: "click160-front-fender-glossy-black",
       image: require("../../assets/images/Product_Images/hondaClick160FrontFenderGlossyBlack.jpg"),
     },
     {
       id: "c4",
       name: "Click 160 Front Cover Right White",
       price: 2600,
+      imageKey: "click160-front-cover-right-white",
       image: require("../../assets/images/Product_Images/hondaClick160FrontCoverRigthWhite.jpg"),
     },
   ];
@@ -187,24 +201,28 @@ export default function Catalog() {
       id: "a1",
       name: "ADV 160 Front Center Cover",
       price: 450,
+      imageKey: "adv160-front-center-cover",
       image: require("../../assets/images/Product_Images/hondaAdv160frontcentercover.jpg"),
     },
     {
       id: "a2",
       name: "ADV 160 Front Side Left Black",
       price: 2400,
+      imageKey: "adv160-front-side-left-black",
       image: require("../../assets/images/Product_Images/hondaAdv160FrontSideLeftBlack.jpg"),
     },
     {
       id: "a3",
       name: "ADV 160 Cover Front Upper Matte Red",
       price: 2300,
+      imageKey: "adv160-cover-front-upper-matte-red",
       image: require("../../assets/images/Product_Images/hondaAdv160coverFrontupperMatteRed.jpg"),
     },
     {
       id: "a4",
       name: "ADV 160 Front Fender Matte Black",
       price: 3550,
+      imageKey: "adv160-front-fender-matte-black",
       image: require("../../assets/images/Product_Images/hondaAdv160frontFenderMatteBlack.jpg"),
     },
   ];
@@ -280,9 +298,7 @@ export default function Catalog() {
           {product.variants.map((variant: any, index: number) => (
             <TouchableOpacity
               key={index}
-              onPress={() =>
-                updateState(product.id, { colorIndex: index })
-              }
+              onPress={() => updateState(product.id, { colorIndex: index })}
             >
               <Image
                 source={variant.image}
@@ -384,100 +400,25 @@ export default function Catalog() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8F9FB", padding: 16 },
-
-  navContainer: {
-    flexDirection: "row",
-    gap: 10,
-    marginBottom: 12,
-    marginTop: 8,
-  },
-
+  navContainer: { flexDirection: "row", gap: 10, marginBottom: 12, marginTop: 8 },
   navImage: { width: 100, height: 50, borderRadius: 12 },
-
   sectionTitle: { fontSize: 18, fontWeight: "700", marginVertical: 10 },
-
   grid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
-
-  card: {
-    width: "48%",
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 10,
-    marginBottom: 12,
-    elevation: 3,
-  },
-
+  card: { width: "48%", backgroundColor: "#fff", borderRadius: 16, padding: 10, marginBottom: 12, elevation: 3 },
   image: { width: "100%", height: 100, borderRadius: 10 },
-
   productName: { fontSize: 13, fontWeight: "600", marginTop: 4 },
-
   productPrice: { fontSize: 13, color: "#4CAF50", marginBottom: 6 },
-
-  addButton: {
-    backgroundColor: "#111",
-    paddingVertical: 6,
-    borderRadius: 8,
-    alignItems: "center",
-  },
-
+  addButton: { backgroundColor: "#111", paddingVertical: 6, borderRadius: 8, alignItems: "center" },
   addButtonText: { color: "#fff", fontSize: 12, fontWeight: "600" },
-
   sideContainer: { flexDirection: "row", gap: 6, marginBottom: 6 },
-
-  sideButton: {
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: "#eee",
-  },
-
+  sideButton: { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 10, backgroundColor: "#eee" },
   sideActive: { backgroundColor: "#999" },
-
   sideText: { fontSize: 11, fontWeight: "600" },
-
-  colorContainer: {
-    flexDirection: "row",
-    gap: 6,
-    marginBottom: 8,
-  },
-
-  colorCircle: {
-    width: 28,
-    height: 28,
-    borderRadius: 50,
-  },
-
-  colorActive: {
-    borderWidth: 2,
-    borderColor: "#000",
-  },
-
-  modalBackground: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.9)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  fullImage: {
-    width: "90%",
-    height: "60%",
-    resizeMode: "contain",
-  },
-
-  toast: {
-    position: "absolute",
-    bottom: 30,
-    alignSelf: "center",
-    backgroundColor: "#111",
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 20,
-    zIndex: 999,
-  },
-
-  toastText: {
-    color: "#fff",
-    fontWeight: "600",
-  },
+  colorContainer: { flexDirection: "row", gap: 6, marginBottom: 8 },
+  colorCircle: { width: 28, height: 28, borderRadius: 50 },
+  colorActive: { borderWidth: 2, borderColor: "#000" },
+  modalBackground: { flex: 1, backgroundColor: "rgba(0,0,0,0.9)", justifyContent: "center", alignItems: "center" },
+  fullImage: { width: "90%", height: "60%", resizeMode: "contain" },
+  toast: { position: "absolute", bottom: 30, alignSelf: "center", backgroundColor: "#111", paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, zIndex: 999 },
+  toastText: { color: "#fff", fontWeight: "600" },
 });

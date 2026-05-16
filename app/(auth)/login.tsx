@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
@@ -21,6 +22,7 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -85,14 +87,27 @@ export default function LoginScreen() {
             onChangeText={setEmail}
           />
 
-          <TextInput
-            placeholder="Password"
-            placeholderTextColor="#A0A0A0"
-            secureTextEntry
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-          />
+          <View style={styles.passwordContainer}>
+            <TextInput
+              placeholder="Password"
+              placeholderTextColor="#A0A0A0"
+              secureTextEntry={!showPassword}
+              style={styles.passwordInput}
+              value={password}
+              onChangeText={setPassword}
+            />
+
+            <TouchableOpacity
+              onPress={() => setShowPassword(!showPassword)}
+              style={styles.eyeButton}
+            >
+              <Ionicons
+                name={showPassword ? 'eye-off' : 'eye'}
+                size={22}
+                color="#666"
+              />
+            </TouchableOpacity>
+          </View>
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -103,18 +118,21 @@ export default function LoginScreen() {
           >
             <Text style={styles.loginText}>LOGIN</Text>
           </TouchableOpacity>
+
           <TouchableOpacity
-  onPress={() => router.push("/admin")}
-  style={{ marginTop: 10 }}
->
-  <Text style={{
-    textAlign: "center",
-    color: "#007AFF",
-    fontSize: 13
-  }}>
-    Login as Admin
-  </Text>
-</TouchableOpacity>
+            onPress={() => router.push("/admin")}
+            style={{ marginTop: 10 }}
+          >
+            <Text
+              style={{
+                textAlign: "center",
+                color: "#007AFF",
+                fontSize: 13
+              }}
+            >
+              Login as Admin
+            </Text>
+          </TouchableOpacity>
         </View>
 
         {/* SIGNUP */}
@@ -132,12 +150,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 24,
-    paddingTop: 60, // 👈 pushes everything down nicely from top
+    paddingTop: 60,
   },
 
   logoSection: {
     alignItems: 'center',
-    marginBottom: 30, // 👈 controls spacing between logos and form
+    marginBottom: 30,
   },
 
   logo1: {
@@ -172,6 +190,31 @@ const styles = StyleSheet.create({
     fontSize: 15,
     marginBottom: 14,
     backgroundColor: '#FAFAFA',
+  },
+
+  passwordContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E5E5',
+    borderRadius: 14,
+    backgroundColor: '#FAFAFA',
+    marginBottom: 14,
+    height: 52,
+  },
+
+  passwordInput: {
+    flex: 1,
+    paddingHorizontal: 16,
+    fontSize: 15,
+    height: '100%',
+  },
+
+  eyeButton: {
+    paddingHorizontal: 14,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
   loginButton: {

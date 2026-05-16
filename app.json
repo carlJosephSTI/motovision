@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "MyApp",
-    "slug": "MyApp",
+    "name": "MotoVision",
+    "slug": "MotoVision",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/gg.jpg",
+    "icon": "./assets/images/GGlogo.jpg",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,

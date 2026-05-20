@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
@@ -62,7 +63,6 @@ export default function LoginScreen() {
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
       <View style={styles.container}>
 
-        {/* LOGO SECTION */}
         <View style={styles.logoSection}>
           <Image
             source={require('../../assets/images/GGlogo.jpg')}
@@ -70,72 +70,84 @@ export default function LoginScreen() {
           />
 
           <Image
-            source={require('../../assets/images/MotoLogo.jpg')}
+            source={require('../../assets/images/newMotoLogo.png')}
             style={styles.logo2}
           />
         </View>
 
-        {/* FORM */}
-        <View style={styles.card}>
-          <TextInput
-            placeholder="Email"
-            placeholderTextColor="#A0A0A0"
-            keyboardType="email-address"
-            autoCapitalize="none"
-            style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-          />
+        <View style={styles.cardGlow}>
+          <LinearGradient
+            colors={["#151A22", "#0F131A", "#11161D"]}
+            style={styles.card}
+          >
+            <Text style={styles.cardTitle}>Welcome Back</Text>
+            <Text style={styles.cardSubtitle}>
+              Sign in to continue customizing your ride
+            </Text>
 
-          <View style={styles.passwordContainer}>
-            <TextInput
-              placeholder="Password"
-              placeholderTextColor="#A0A0A0"
-              secureTextEntry={!showPassword}
-              style={styles.passwordInput}
-              value={password}
-              onChangeText={setPassword}
-            />
+            <View style={styles.inputBox}>
+              <Ionicons name="mail-outline" size={19} color="#9CA3AF" />
+              <TextInput
+                placeholder="Email"
+                placeholderTextColor="#747B86"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                style={styles.input}
+                value={email}
+                onChangeText={setEmail}
+              />
+            </View>
+
+            <View style={styles.passwordContainer}>
+              <Ionicons name="lock-closed-outline" size={19} color="#9CA3AF" />
+
+              <TextInput
+                placeholder="Password"
+                placeholderTextColor="#747B86"
+                secureTextEntry={!showPassword}
+                style={styles.passwordInput}
+                value={password}
+                onChangeText={setPassword}
+              />
+
+              <TouchableOpacity
+                onPress={() => setShowPassword(!showPassword)}
+                style={styles.eyeButton}
+              >
+                <Ionicons
+                  name={showPassword ? 'eye-off' : 'eye'}
+                  size={22}
+                  color="#B8C0CC"
+                />
+              </TouchableOpacity>
+            </View>
+
+            {error ? <Text style={styles.error}>{error}</Text> : null}
 
             <TouchableOpacity
-              onPress={() => setShowPassword(!showPassword)}
-              style={styles.eyeButton}
+              activeOpacity={0.85}
+              onPress={handleLogin}
             >
-              <Ionicons
-                name={showPassword ? 'eye-off' : 'eye'}
-                size={22}
-                color="#666"
-              />
+              <LinearGradient
+                colors={["#E50914", "#7A0C12"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.loginButton}
+              >
+                <Text style={styles.loginText}>LOGIN</Text>
+                <Ionicons name="arrow-forward" size={18} color="#fff" />
+              </LinearGradient>
             </TouchableOpacity>
-          </View>
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          <TouchableOpacity
-            style={styles.loginButton}
-            activeOpacity={0.8}
-            onPress={handleLogin}
-          >
-            <Text style={styles.loginText}>LOGIN</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={() => router.push("/admin")}
-            style={{ marginTop: 10 }}
-          >
-            <Text
-              style={{
-                textAlign: "center",
-                color: "#007AFF",
-                fontSize: 13
-              }}
+            <TouchableOpacity
+              onPress={() => router.push("/admin")}
+              style={styles.adminButton}
             >
-              Login as Admin
-            </Text>
-          </TouchableOpacity>
+              <Text style={styles.adminText}>Login as Admin</Text>
+            </TouchableOpacity>
+          </LinearGradient>
         </View>
 
-        {/* SIGNUP */}
         <TouchableOpacity onPress={() => router.push('/(auth)/signup')}>
           <Text style={styles.createAccount}>Create an account</Text>
         </TouchableOpacity>
@@ -148,66 +160,100 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#07090D',
     paddingHorizontal: 24,
-    paddingTop: 60,
+    paddingTop: 34,
   },
 
   logoSection: {
     alignItems: 'center',
-    marginBottom: 30,
+    marginBottom: 24,
   },
 
   logo1: {
-    width: 90,
-    height: 90,
-    marginBottom: 10,
+    width: 115,
+    height: 55,
+    resizeMode: 'contain',
+    marginBottom: 5,
+    
   },
 
   logo2: {
-    width: 220,
-    height: 100,
+    width: 300,
+    height: 200,
     resizeMode: 'contain',
   },
 
-  card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 22,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 5,
+  cardGlow: {
+    borderRadius: 24,
+    padding: 1,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    shadowColor: "#FFFFFF",
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    elevation: 8,
     marginBottom: 20,
   },
 
-  input: {
-    height: 52,
+  card: {
+    borderRadius: 24,
+    padding: 22,
     borderWidth: 1,
-    borderColor: '#E5E5E5',
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    fontSize: 15,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+
+  cardTitle: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "900",
+    marginBottom: 4,
+  },
+
+  cardSubtitle: {
+    color: "#9CA3AF",
+    fontSize: 12,
+    fontWeight: "700",
+    marginBottom: 18,
+  },
+
+  inputBox: {
+    height: 54,
+    borderWidth: 1,
+    borderColor: '#252A33',
+    borderRadius: 15,
+    paddingHorizontal: 14,
     marginBottom: 14,
-    backgroundColor: '#FAFAFA',
+    backgroundColor: '#090D13',
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  input: {
+    flex: 1,
+    paddingHorizontal: 10,
+    fontSize: 15,
+    color: "#FFFFFF",
+    height: "100%",
   },
 
   passwordContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#E5E5E5',
-    borderRadius: 14,
-    backgroundColor: '#FAFAFA',
+    borderColor: '#252A33',
+    borderRadius: 15,
+    backgroundColor: '#090D13',
     marginBottom: 14,
-    height: 52,
+    height: 54,
+    paddingLeft: 14,
   },
 
   passwordInput: {
     flex: 1,
-    paddingHorizontal: 16,
+    paddingHorizontal: 10,
     fontSize: 15,
     height: '100%',
+    color: "#FFFFFF",
   },
 
   eyeButton: {
@@ -218,31 +264,51 @@ const styles = StyleSheet.create({
   },
 
   loginButton: {
-    height: 52,
-    backgroundColor: '#111',
-    borderRadius: 14,
+    height: 54,
+    borderRadius: 15,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 8,
+    marginTop: 4,
+    flexDirection: "row",
+    gap: 8,
+    shadowColor: "#E50914",
+    shadowOpacity: 0.35,
+    shadowRadius: 14,
+    elevation: 7,
   },
 
   loginText: {
     color: '#FFF',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+
+  adminButton: {
+    marginTop: 14,
+  },
+
+  adminText: {
+    textAlign: "center",
+    color: "#FFFFFF",
+    opacity: 0.78,
+    fontSize: 13,
+    fontWeight: "700",
   },
 
   createAccount: {
     textAlign: 'center',
     fontSize: 14,
-    color: '#333',
-    opacity: 0.7,
+    color: '#C9D1D9',
+    opacity: 0.85,
+    fontWeight: "700",
   },
 
   error: {
-    color: 'red',
-    fontSize: 14,
+    color: '#FF6B6B',
+    fontSize: 13,
     marginBottom: 10,
     textAlign: 'center',
+    fontWeight: "700",
   },
 });

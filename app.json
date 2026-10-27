@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/GGlogo.jpg",
-    "scheme": "myapp",
+    "scheme": "motovision",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {

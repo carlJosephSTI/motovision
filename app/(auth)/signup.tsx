@@ -2,10 +2,11 @@ import { Ionicons } from "@expo/vector-icons";
 import Checkbox from "expo-checkbox";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { createUserWithEmailAndPassword, sendEmailVerification, signOut, type User } from "firebase/auth";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { useState } from "react";
 import {
+  Alert,
   Keyboard,
   Modal,
   ScrollView,
@@ -35,7 +36,11 @@ export default function SignUpScreen() {
   const router = useRouter();
 
   const handleSignup = async () => {
-    if (!email || !password || !confirmPassword) {
+    setError("");
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!normalizedEmail || !password || !confirmPassword) {
       setError("All fields are required");
       return;
     }
@@ -50,30 +55,76 @@ export default function SignUpScreen() {
       return;
     }
 
+    let createdUser: User | null = null;
+
     try {
       const userCredential = await createUserWithEmailAndPassword(
         auth,
-        email,
+        normalizedEmail,
         password
       );
 
-      const user = userCredential.user;
+      createdUser = userCredential.user;
 
-      await setDoc(doc(db, "users", user.uid), {
-        email: user.email,
+      // Keep the existing customer profile record in Firestore.
+      await setDoc(doc(db, "users", createdUser.uid), {
+        email: createdUser.email,
         role: "customer",
         createdAt: serverTimestamp(),
       });
 
-      alert("Account created successfully!");
-      router.back();
-
-    } catch (err) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("An unexpected error occurred");
+      try {
+        // Send the email verification link to the newly registered user.
+        await sendEmailVerification(createdUser);
+      } catch {
+        // The Firebase account exists, but the verification email could not be sent.
+        await signOut(auth).catch(() => undefined);
+        Alert.alert(
+          "Account created, email not sent",
+          "Your account was created, but MotoVision couldn't send the verification email. Please try again later. We'll add a resend option to the login screen next."
+        );
+        return;
       }
+
+      // Do not leave a newly registered, unverified user signed in.
+      await signOut(auth).catch(() => undefined);
+
+      Alert.alert(
+        "Verify your email",
+        `We've sent a verification link to ${createdUser.email ?? normalizedEmail}. Open that email and tap the link before logging in.`,
+        [
+          {
+            text: "OK",
+            onPress: () => router.back(),
+          },
+        ]
+      );
+    } catch (err) {
+      // If account creation succeeded but profile setup failed, sign out safely.
+      if (createdUser) {
+        await signOut(auth).catch(() => undefined);
+        setError(
+          "Your account was created, but we couldn't finish setting up your profile. Please contact the app administrator before trying to register again."
+        );
+        console.error("SIGNUP PROFILE SETUP ERROR:", err);
+        return;
+      }
+
+      const code = (err as { code?: string })?.code;
+
+      if (code === "auth/email-already-in-use") {
+        setError("An account with this email already exists. Try logging in instead.");
+      } else if (code === "auth/invalid-email") {
+        setError("Please enter a valid email address.");
+      } else if (code === "auth/weak-password") {
+        setError("Your password is too weak. Please choose a stronger password.");
+      } else if (code === "auth/network-request-failed") {
+        setError("Network error. Check your internet connection and try again.");
+      } else {
+        setError(err instanceof Error ? err.message : "An unexpected error occurred.");
+      }
+
+      console.error("SIGNUP ERROR:", err);
     }
   };
 
@@ -87,15 +138,34 @@ export default function SignUpScreen() {
 
             <ScrollView style={styles.modalContent}>
               <Text style={styles.modalText}>
-                Welcome to MotoVision.
+  Welcome to MotoVision.
 
-                {"\n\n"}By creating an account, you agree to the following:
+  {"\n\n"}By creating an account, you agree to use MotoVision as a motorcycle customization preview and service appointment application.
 
-                {"\n\n"}• Your data will be stored securely.
-                {"\n"}• You are responsible for your account activity.
-                {"\n"}• Payments are handled via secure third-party providers.
-                {"\n"}• Misuse of the app may result in account suspension.
-              </Text>
+  {"\n\n"}1. AR Feature Limitation
+  {"\n"}MotoVision currently supports only two motorcycle model previews: Honda Click 160 and Honda ADV 160. Other motorcycle models may not be available in this prototype version.
+
+  {"\n\n"}2. Device Compatibility
+  {"\n"}The AR feature requires a device that supports ARCore / Google Play Services for AR. If your device does not support ARCore, the AR preview may not function properly.
+
+  {"\n\n"}3. Personal Data Collection
+  {"\n"}MotoVision may collect basic account information such as your name, email address, contact number, appointment details, cart items, and transaction-related records.
+
+  {"\n\n"}4. Purpose of Data Use
+  {"\n"}Your information will only be used for account registration, login authentication, order/cart processing, appointment scheduling, customer support, and app-related records.
+
+  {"\n\n"}5. Data Privacy
+  {"\n"}MotoVision follows the principles of the Philippine Data Privacy Act of 2012, also known as Republic Act No. 10173. We aim to process personal data with transparency, legitimate purpose, and proportionality.
+
+  {"\n\n"}6. Data Protection
+  {"\n"}Your data will be stored through Firebase services and will not be intentionally sold or shared with unrelated third parties. Access to user records is limited to authorized administrators for app-related purposes.
+
+  {"\n\n"}7. User Responsibility
+  {"\n"}You are responsible for keeping your login credentials secure and for ensuring that the information you provide is accurate.
+
+  {"\n\n"}8. Consent
+  {"\n"}By checking the box and creating an account, you confirm that you understand and agree to these Terms and Conditions.
+</Text>
             </ScrollView>
 
             <TouchableOpacity
@@ -453,4 +523,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 14,
   },
-});
+})

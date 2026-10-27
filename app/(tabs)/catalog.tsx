@@ -1,12 +1,15 @@
+
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import {
+  collection,
   doc,
   getDoc,
+  onSnapshot,
   setDoc,
-  updateDoc
+  updateDoc,
 } from "firebase/firestore";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Animated,
   Image,
@@ -30,6 +33,8 @@ export default function Catalog() {
 
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [productStates, setProductStates] = useState<any>({});
+  const [firestoreProducts, setFirestoreProducts] = useState<any[]>([]);
+  const [productsError, setProductsError] = useState("");
 
   const getState = (id: string) => {
     return productStates[id] || { colorIndex: 0, side: "Left" };
@@ -110,6 +115,38 @@ export default function Catalog() {
     }, 1500);
   };
 
+  // Listen for inventory products in Firestore.
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "products"),
+      (snapshot) => {
+        const products = snapshot.docs.map((productDoc) => {
+          const data = productDoc.data();
+
+          return {
+            id: `firestore_${productDoc.id}`,
+            firestoreId: productDoc.id,
+            name: data.name || "Unnamed Product",
+            price: Number(data.price) || 0,
+            stock: Number(data.stock) || 0,
+            model: data.model || "Other",
+            category: data.category || "Other Part",
+            imageKey: data.imageKey || "",
+          };
+        });
+
+        setFirestoreProducts(products);
+        setProductsError("");
+      },
+      (error) => {
+        console.error("Failed to load catalog products:", error);
+        setProductsError("Couldn't load additional products.");
+      }
+    );
+
+    return unsubscribe;
+  }, []);
+
   const getDescription = (name: string) => {
     const lowerName = name.toLowerCase();
 
@@ -136,7 +173,13 @@ export default function Catalog() {
     return "A motorcycle body accessory that helps customers preview style, fitment, and color before actual installation.";
   };
 
-  const openPreview = (product: any, image: any, name: string, price: number, extra?: any) => {
+  const openPreview = (
+    product: any,
+    image: any,
+    name: string,
+    price: number,
+    extra?: any
+  ) => {
     setSelectedProduct({
       image,
       name,
@@ -148,7 +191,15 @@ export default function Catalog() {
   };
 
   const addToCart = async (product: any, state?: any) => {
-    if (!user) return;
+    if (!user) {
+      alert("Please log in to add products to your cart.");
+      return;
+    }
+
+    if (typeof product.stock === "number" && product.stock <= 0) {
+      alert("Sorry, this product is out of stock.");
+      return;
+    }
 
     let newItem;
 
@@ -177,36 +228,41 @@ export default function Catalog() {
       };
     }
 
-    const cartRef = doc(db, "carts", user.uid);
-    const cartSnap = await getDoc(cartRef);
+    try {
+      const cartRef = doc(db, "carts", user.uid);
+      const cartSnap = await getDoc(cartRef);
 
-    if (!cartSnap.exists()) {
-      await setDoc(cartRef, { items: [newItem] });
-    } else {
-      const rawItems = cartSnap.data().items || [];
-
-      const items = rawItems.map((item: any) => {
-        const cleaned = { ...item };
-        delete cleaned.image;
-        return cleaned;
-      });
-
-      const index = items.findIndex(
-        (item: any) => item.productId === newItem.productId
-      );
-
-      if (index >= 0) {
-        items[index].quantity += 1;
+      if (!cartSnap.exists()) {
+        await setDoc(cartRef, { items: [newItem] });
       } else {
-        items.push(newItem);
+        const rawItems = cartSnap.data().items || [];
+
+        const items = rawItems.map((item: any) => {
+          const cleaned = { ...item };
+          delete cleaned.image;
+          return cleaned;
+        });
+
+        const index = items.findIndex(
+          (item: any) => item.productId === newItem.productId
+        );
+
+        if (index >= 0) {
+          items[index].quantity += 1;
+        } else {
+          items.push(newItem);
+        }
+
+        await updateDoc(cartRef, { items });
       }
 
-      await updateDoc(cartRef, { items });
+      animateButton(product.id);
+      pulseCard(product.id);
+      showAddedToast();
+    } catch (error) {
+      console.error("Failed to add product to cart:", error);
+      alert("Couldn't add this product to your cart. Please try again.");
     }
-
-    animateButton(product.id);
-    pulseCard(product.id);
-    showAddedToast();
   };
 
   const clickTheme = {
@@ -228,6 +284,7 @@ export default function Catalog() {
   const clickProducts = [
     {
       id: "click160-front-side",
+      name: "Click 160 Front Side",
       baseName: "Click 160 Front Side",
       price: 2500,
       hasSide: true,
@@ -246,6 +303,7 @@ export default function Catalog() {
     },
     {
       id: "click160-front-cover",
+      name: "Click 160 Front Cover",
       baseName: "Click 160 Front Cover",
       price: 2800,
       hasSide: false,
@@ -309,6 +367,58 @@ export default function Catalog() {
     },
   ];
 
+  // Inventory images use the same keys as the admin inventory screen.
+  const getInventoryImage = (imageKey: string) => {
+    const images: Record<string, any> = {
+      "click160-front-side-matte-red": require("../../assets/images/Product_Images/hondaClick160FrontSideMatteRed.jpg"),
+      "click160-front-side-matte-black": require("../../assets/images/Product_Images/hondaClick160FrontSideMatteBlack.jpg"),
+      "click160-front-cover-matte-red": require("../../assets/images/Product_Images/hondaClick160FrontCoverMatteRed.jpg"),
+      "click160-front-cover-matte-black": require("../../assets/images/Product_Images/hondaClick160FrontCoverMatteBlack.jpg"),
+      "click160-front-fender-glossy-black": require("../../assets/images/Product_Images/hondaClick160FrontFenderGlossyBlack.jpg"),
+      "click160-front-cover-right-white": require("../../assets/images/Product_Images/hondaClick160FrontCoverRigthWhite.jpg"),
+      "adv160-front-center-cover": require("../../assets/images/Product_Images/hondaAdv160frontcentercover.jpg"),
+      "adv160-front-side-left-black": require("../../assets/images/Product_Images/hondaAdv160FrontSideLeftBlack.jpg"),
+      "adv160-cover-front-upper-matte-red": require("../../assets/images/Product_Images/hondaAdv160coverFrontupperMatteRed.jpg"),
+      "adv160-front-fender-matte-black": require("../../assets/images/Product_Images/hondaAdv160frontFenderMatteBlack.jpg"),
+    };
+
+    return (
+      images[imageKey] ||
+      require("../../assets/images/Product_Images/Click160Button.jpg")
+    );
+  };
+
+  // Keep the original products and hide exact-name duplicates from Firestore.
+  const existingNames = new Set(
+    [...clickProducts, ...advProducts].map((product: any) =>
+      (product.name || product.baseName).trim().toLowerCase()
+    )
+  );
+
+  const additionalProducts = firestoreProducts
+    .filter(
+      (product) =>
+        !existingNames.has(product.name.trim().toLowerCase())
+    )
+    .map((product) => ({
+      ...product,
+      image: getInventoryImage(product.imageKey),
+    }));
+
+  const additionalClickProducts = additionalProducts.filter((product) =>
+    product.model.toLowerCase().includes("click")
+  );
+
+  const additionalAdvProducts = additionalProducts.filter((product) =>
+    product.model.toLowerCase().includes("adv")
+  );
+
+  const otherProducts = additionalProducts.filter(
+    (product) =>
+      !product.model.toLowerCase().includes("click") &&
+      !product.model.toLowerCase().includes("adv")
+  );
+
   const renderProduct = (product: any, theme: any) => {
     const isVariant = product.variants;
     const glow = getGlowAnim(product.id);
@@ -354,6 +464,20 @@ export default function Catalog() {
             ₱{product.price}
           </Text>
 
+          {typeof product.stock === "number" && (
+            <Text
+              style={{
+                color: product.stock > 0 ? "#9CA3AF" : "#FF6B6B",
+                fontSize: 10,
+                marginBottom: 7,
+              }}
+            >
+              {product.stock > 0
+                ? `${product.stock} in stock`
+                : "Out of stock"}
+            </Text>
+          )}
+
           <Animated.View
             style={{
               transform: [{ scale: getScaleAnim(product.id) }],
@@ -365,8 +489,15 @@ export default function Catalog() {
                 {
                   borderColor: theme.accent,
                   backgroundColor: theme.accentSoft,
+                  opacity:
+                    typeof product.stock === "number" && product.stock <= 0
+                      ? 0.45
+                      : 1,
                 },
               ]}
+              disabled={
+                typeof product.stock === "number" && product.stock <= 0
+              }
               onPress={() => addToCart(product)}
             >
               <Ionicons name="cart-outline" size={15} color="#fff" />
@@ -531,9 +662,7 @@ export default function Catalog() {
                 {selectedProduct?.description}
               </Text>
 
-              <Text style={styles.previewHint}>
-                Tap anywhere to close
-              </Text>
+              <Text style={styles.previewHint}>Tap anywhere to close</Text>
             </View>
           </View>
         </TouchableWithoutFeedback>
@@ -587,6 +716,21 @@ export default function Catalog() {
           </View>
         </View>
 
+        {additionalClickProducts.length > 0 && (
+          <View>
+            <Text style={styles.sectionTitle}>More Click 160 Parts</Text>
+            <Text style={[styles.sectionSubtitle, { color: clickTheme.accent }]}>
+              Additional products from inventory
+            </Text>
+
+            <View style={styles.grid}>
+              {additionalClickProducts.map((product) =>
+                renderProduct(product, clickTheme)
+              )}
+            </View>
+          </View>
+        )}
+
         <View ref={advRef}>
           <Text style={styles.sectionTitle}>ADV 160</Text>
           <Text style={[styles.sectionSubtitle, { color: advTheme.accent }]}>
@@ -597,6 +741,42 @@ export default function Catalog() {
             {advProducts.map((product) => renderProduct(product, advTheme))}
           </View>
         </View>
+
+        {additionalAdvProducts.length > 0 && (
+          <View>
+            <Text style={styles.sectionTitle}>More ADV 160 Parts</Text>
+            <Text style={[styles.sectionSubtitle, { color: advTheme.accent }]}>
+              Additional products from inventory
+            </Text>
+
+            <View style={styles.grid}>
+              {additionalAdvProducts.map((product) =>
+                renderProduct(product, advTheme)
+              )}
+            </View>
+          </View>
+        )}
+
+        {otherProducts.length > 0 && (
+          <View>
+            <Text style={styles.sectionTitle}>Other Parts</Text>
+            <Text style={[styles.sectionSubtitle, { color: "#00D4FF" }]}>
+              More products available
+            </Text>
+
+            <View style={styles.grid}>
+              {otherProducts.map((product) =>
+                renderProduct(product, advTheme)
+              )}
+            </View>
+          </View>
+        )}
+
+        {!!productsError && (
+          <Text style={{ color: "#FF6B6B", marginTop: 10 }}>
+            {productsError}
+          </Text>
+        )}
       </ScrollView>
     </View>
   );

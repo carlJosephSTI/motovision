@@ -1,17 +1,18 @@
-import { initializeApp } from "firebase/app";
+import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { initializeFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyAWsrKI7JKHImgx0M8UhO2dTTUHIVcugo8",
-  authDomain: "motovision-b0e77.firebaseapp.com",
-  projectId: "motovision-b0e77",
-  storageBucket: "motovision-b0e77.firebasestorage.app",
-  messagingSenderId: "660268603751",
-  appId: "1:660268603751:web:1164776dfc971c0b03f7c2"
+  apiKey: "AIzaSyAGDIzBr6-VEuyv47yNqkli4rzkQsX4koo",
+  authDomain: "motovision-3d8ba.firebaseapp.com",
+  projectId: "motovision-3d8ba",
+  storageBucket: "motovision-3d8ba.firebasestorage.app",
+  messagingSenderId: "1033979305991",
+  appId: "1:1033979305991:web:b37b0000a5be5871b74aa2",
 };
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
 
@@ -19,3 +20,5 @@ export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
   useFetchStreams: false,
 });
+
+export const storage = getStorage(app);

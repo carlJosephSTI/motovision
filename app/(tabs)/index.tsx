@@ -1,7 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
+import * as IntentLauncher from "expo-intent-launcher";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import {
+  Alert,
   Image,
   ImageBackground,
   SafeAreaView,
@@ -18,6 +20,20 @@ export default function Home() {
   const now = new Date();
   const hour = now.getHours();
   const isOpen = hour >= 9 && hour < 18;
+
+  const openARModule = async () => {
+    try {
+      await IntentLauncher.startActivityAsync("android.intent.action.MAIN", {
+        packageName: "com.motovision.ar",
+        className: "com.unity3d.player.UnityPlayerGameActivity",
+      });
+    } catch (error) {
+      Alert.alert(
+        "AR Module Not Found",
+        "Please install the MotoVision AR app first."
+      );
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -59,12 +75,8 @@ export default function Home() {
             <Text style={styles.time}>9:00 AM – 6:00 PM</Text>
           </View>
 
-          <View
-            style={[
-              styles.statusBadge,
-              isOpen ? styles.openBadge : styles.closedBadge,
-            ]}
-          >
+          {/* Plain Status Indicator (No Button-Like Background) */}
+          <View style={styles.statusBadge}>
             <Text style={[styles.status, isOpen ? styles.open : styles.closed]}>
               {isOpen ? "OPEN" : "CLOSED"}
             </Text>
@@ -73,7 +85,7 @@ export default function Home() {
 
         {/* AR EXPERIENCE */}
         <TouchableOpacity
-          onPress={() => router.push("../ar/ar")}
+          onPress={openARModule}
           activeOpacity={0.9}
         >
           <LinearGradient
@@ -99,7 +111,7 @@ export default function Home() {
             </View>
 
             <Image
-              source={require("../../assets/images/motorcycle.jpg")}
+              source={require("../../assets/images/virtualmotor.jpg")}
               style={styles.arImage}
             />
           </LinearGradient>
@@ -140,7 +152,7 @@ export default function Home() {
           <TouchableOpacity
             style={[styles.serviceCard, styles.greenService]}
             activeOpacity={0.85}
-            onPress={() => router.push("../customer/history")}
+            onPress={() => router.push("/customer/history")}
           >
             <View style={styles.greenGlow} />
 
@@ -280,22 +292,14 @@ const styles = StyleSheet.create({
   },
 
   statusBadge: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-  },
-
-  openBadge: {
-    backgroundColor: "rgba(46, 204, 113, 0.15)",
-  },
-
-  closedBadge: {
-    backgroundColor: "rgba(229, 57, 53, 0.15)",
+    paddingVertical: 4,
+    paddingHorizontal: 8,
   },
 
   status: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "900",
+    letterSpacing: 0.5,
   },
 
   open: {
@@ -394,8 +398,8 @@ const styles = StyleSheet.create({
     width: 215,
     height: 155,
     resizeMode: "contain",
-    opacity: 0.48,
-    tintColor: "#00D4FF",
+    opacity: 0.55,
+    borderRadius: 999,
     transform: [{ rotate: "-3deg" }],
   },
 

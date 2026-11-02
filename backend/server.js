@@ -30,7 +30,184 @@ try {
 }
 
 const db = getFirestore();
+
 app.use(cors());
+
+// Keep the raw webhook body available for signature verification.
+app.post(
+  "/webhooks/paymongo",
+  express.raw({ type: "application/json", limit: "1mb" }),
+  async (req, res) => {
+    const webhookSecret = process.env.PAYMONGO_WEBHOOK_SECRET;
+
+    if (!webhookSecret) {
+      console.error("Missing PAYMONGO_WEBHOOK_SECRET.");
+      return res.status(503).send("Webhook is not configured.");
+    }
+
+    const signatureHeader = req.headers["paymongo-signature"];
+
+    if (typeof signatureHeader !== "string" || !Buffer.isBuffer(req.body)) {
+      return res.status(400).send("Invalid webhook request.");
+    }
+
+    try {
+      const signatureParts = Object.fromEntries(
+        signatureHeader.split(",").map((part) => {
+          const separator = part.indexOf("=");
+          return separator === -1
+            ? [part, ""]
+            : [part.slice(0, separator), part.slice(separator + 1)];
+        })
+      );
+
+      const timestamp = signatureParts.t;
+      const receivedSignature =
+        process.env.NODE_ENV === "production"
+          ? signatureParts.li
+          : signatureParts.te;
+
+      if (!timestamp || !receivedSignature) {
+        return res.status(400).send("Missing webhook signature.");
+      }
+
+      // PayMongo signs the timestamp followed by the raw request body.
+      const signedPayload = Buffer.concat([
+        Buffer.from(`${timestamp}.`),
+        req.body,
+      ]);
+
+      const expectedSignature = crypto
+        .createHmac("sha256", webhookSecret)
+        .update(signedPayload)
+        .digest("hex");
+
+      const receivedBuffer = Buffer.from(receivedSignature, "hex");
+      const expectedBuffer = Buffer.from(expectedSignature, "hex");
+
+      if (
+        receivedBuffer.length !== expectedBuffer.length ||
+        !crypto.timingSafeEqual(receivedBuffer, expectedBuffer)
+      ) {
+        return res.status(401).send("Invalid webhook signature.");
+      }
+
+      const payload = JSON.parse(req.body.toString("utf8"));
+
+      // PayMongo's event payload contains the event type and Checkout Session.
+      const eventContainer = payload.data || {};
+      const eventType =
+        eventContainer.type ||
+        eventContainer.attributes?.type ||
+        payload.type;
+
+      if (eventType !== "checkout_session.payment.paid") {
+        return res.status(200).json({
+          received: true,
+          ignored: true,
+        });
+      }
+
+      const session =
+        eventContainer.data ||
+        eventContainer.attributes?.data ||
+        payload.data?.data;
+
+      const sessionId = session?.id;
+      const attributes = session?.attributes || {};
+      const referenceNumber = attributes.reference_number;
+      const metadata = attributes.metadata || {};
+      const orderId = metadata.order_id;
+
+      if (!sessionId || !referenceNumber) {
+        console.error("Paid webhook is missing session/reference details.");
+        return res.status(400).send("Missing checkout session details.");
+      }
+
+      // Locate the order by its server-created order ID, session ID,
+      // or reference number. Never trust a client-supplied payment status.
+      let orderRef = null;
+
+      if (typeof orderId === "string" && orderId) {
+        const candidate = db.collection("orders").doc(orderId);
+        const snapshot = await candidate.get();
+
+        if (snapshot.exists) {
+          orderRef = candidate;
+        }
+      }
+
+      if (!orderRef) {
+        const sessionQuery = await db
+          .collection("orders")
+          .where("checkoutSessionId", "==", sessionId)
+          .limit(1)
+          .get();
+
+        if (!sessionQuery.empty) {
+          orderRef = sessionQuery.docs[0].ref;
+        }
+      }
+
+      if (!orderRef) {
+        const referenceQuery = await db
+          .collection("orders")
+          .where("referenceNumber", "==", referenceNumber)
+          .limit(1)
+          .get();
+
+        if (!referenceQuery.empty) {
+          orderRef = referenceQuery.docs[0].ref;
+        }
+      }
+
+      if (!orderRef) {
+        console.error("No order found for paid checkout session:", sessionId);
+        // Return a failure so the webhook can be retried after investigation.
+        return res.status(500).send("Order not found.");
+      }
+
+      await db.runTransaction(async (transaction) => {
+        const orderSnapshot = await transaction.get(orderRef);
+
+        if (!orderSnapshot.exists) {
+          throw new Error("Order no longer exists.");
+        }
+
+        const order = orderSnapshot.data();
+
+        if (order.checkoutSessionId !== sessionId) {
+          throw new Error("Checkout session does not match the order.");
+        }
+
+        if (order.referenceNumber !== referenceNumber) {
+          throw new Error("Reference number does not match the order.");
+        }
+
+        if (order.status === "paid") {
+          return; // Safe for repeated webhook deliveries.
+        }
+
+        if (order.status !== "pending_payment") {
+          throw new Error("Order is not awaiting payment.");
+        }
+
+        transaction.update(orderRef, {
+          status: "paid",
+          paidAt: FieldValue.serverTimestamp(),
+          paymentProvider: "paymongo",
+          paymongoPaymentIntentId: attributes.payment_intent?.id || null,
+        });
+      });
+
+      return res.status(200).json({ received: true });
+    } catch (error) {
+      console.error("PayMongo webhook processing failed:", error.message);
+      return res.status(500).send("Webhook processing failed.");
+    }
+  }
+);
+
 app.use(express.json({ limit: "100kb" }));
 
 app.get("/", (req, res) => {
@@ -45,20 +222,28 @@ async function requireFirebaseUser(req, res, next) {
   const match = (req.headers.authorization || "").match(/^Bearer\s+(.+)$/i);
 
   if (!match) {
-    return res.status(401).json({ error: "Please sign in again." });
+    return res.status(401).json({
+      error: "Please sign in again.",
+    });
   }
 
   try {
     const token = await getAuth().verifyIdToken(match[1]);
-    req.firebaseUser = { uid: token.uid, email: token.email || null };
-    next();
+
+    req.firebaseUser = {
+      uid: token.uid,
+      email: token.email || null,
+    };
+
+    return next();
   } catch {
-    return res.status(401).json({ error: "Invalid or expired sign-in token." });
+    return res.status(401).json({
+      error: "Invalid or expired sign-in token.",
+    });
   }
 }
 
-// Prices for the static products currently defined in catalog.tsx.
-// Never accept a price supplied by the app as authoritative.
+// Prices are determined by the backend, never by the app.
 const staticProducts = {
   c3: { name: "Click 160 Front Fender Glossy Black", price: 2500 },
   c4: { name: "Click 160 Front Cover Right White", price: 2600 },
@@ -70,15 +255,14 @@ const staticProducts = {
 
 function getStaticProduct(productId) {
   if (staticProducts[productId]) {
-    return {
-      ...staticProducts[productId],
-      productId,
-    };
+    return { ...staticProducts[productId], productId };
   }
 
-  // Variant IDs follow: base ID + "_" + color + "_" + side.
+  // Matches the IDs generated by the current catalog:
+  // click160-front-side_Matte Red_Left
+  // click160-front-cover_Matte Black
   const match = productId.match(
-    /^(click160-front-side|click160-front-cover)_(Matte Red|Matte Black)_(Left|Right)$/
+    /^(click160-front-side|click160-front-cover)_(Matte Red|Matte Black)(?:_(Left|Right))?$/
   );
 
   if (!match) return null;
@@ -86,9 +270,14 @@ function getStaticProduct(productId) {
   const [, baseId, color, side] = match;
   const isSidePanel = baseId === "click160-front-side";
 
+  if (isSidePanel && !side) return null;
+  if (!isSidePanel && side) return null;
+
   return {
     productId,
-    name: `Click 160 ${isSidePanel ? "Front Side" : "Front Cover"} ${color}${isSidePanel ? ` (${side})` : ""}`,
+    name: `Click 160 ${
+      isSidePanel ? "Front Side" : "Front Cover"
+    } ${color}${isSidePanel ? ` (${side})` : ""}`,
     price: isSidePanel ? 2500 : 2800,
     color,
     side: isSidePanel ? side : null,
@@ -123,7 +312,10 @@ async function resolveOrderItem(item) {
   }
 
   const firestoreId = productId.slice("firestore_".length);
-  if (!firestoreId) throw new Error("Invalid catalog product ID.");
+
+  if (!firestoreId) {
+    throw new Error("Invalid catalog product ID.");
+  }
 
   const productSnap = await db.collection("products").doc(firestoreId).get();
 
@@ -140,7 +332,9 @@ async function resolveOrderItem(item) {
   }
 
   if (!Number.isFinite(stock) || stock < quantity) {
-    throw new Error(`${data.name || "A product"} has insufficient stock.`);
+    throw new Error(
+      `${data.name || "A product"} has insufficient stock.`
+    );
   }
 
   return {
@@ -165,7 +359,9 @@ app.post("/api/checkout-session", requireFirebaseUser, async (req, res) => {
   const { items, customer } = req.body || {};
 
   if (!Array.isArray(items) || items.length < 1 || items.length > 30) {
-    return res.status(400).json({ error: "Your cart is empty or invalid." });
+    return res.status(400).json({
+      error: "Your cart is empty or invalid.",
+    });
   }
 
   const customerName =
@@ -173,15 +369,18 @@ app.post("/api/checkout-session", requireFirebaseUser, async (req, res) => {
   const customerContact =
     typeof customer?.contact === "string" ? customer.contact.trim() : "";
 
-  if (!customerName || customerName.length > 120 ||
-      !customerContact || customerContact.length > 40) {
+  if (
+    !customerName ||
+    customerName.length > 120 ||
+    !customerContact ||
+    customerContact.length > 40
+  ) {
     return res.status(400).json({
       error: "Please provide a valid name and contact number.",
     });
   }
 
   try {
-    // Resolve all prices using server-side data.
     const resolvedItems = await Promise.all(items.map(resolveOrderItem));
     const totalPesos = resolvedItems.reduce(
       (sum, item) => sum + item.subtotal,
@@ -194,7 +393,9 @@ app.post("/api/checkout-session", requireFirebaseUser, async (req, res) => {
       totalCentavos < 100 ||
       totalCentavos > 100000000
     ) {
-      return res.status(400).json({ error: "The order total is invalid." });
+      return res.status(400).json({
+        error: "The order total is invalid.",
+      });
     }
 
     const orderRef = db.collection("orders").doc();
@@ -212,8 +413,10 @@ app.post("/api/checkout-session", requireFirebaseUser, async (req, res) => {
         attributes: {
           line_items: lineItems,
           payment_method_types: ["card", "gcash", "qrph"],
-          success_url: "https://motovisionitsbackend.onrender.com/payment/success",
-          cancel_url: "https://motovisionitsbackend.onrender.com/payment/cancel",
+          success_url:
+            "https://motovisionitsbackend.onrender.com/payment/success",
+          cancel_url:
+            "https://motovisionitsbackend.onrender.com/payment/cancel",
           reference_number: referenceNumber,
           send_email_receipt: true,
           metadata: {
@@ -230,7 +433,8 @@ app.post("/api/checkout-session", requireFirebaseUser, async (req, res) => {
         method: "POST",
         headers: {
           Authorization:
-            "Basic " + Buffer.from(`${secretKey}:`).toString("base64"),
+            "Basic " +
+            Buffer.from(`${secretKey}:`).toString("base64"),
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
@@ -244,6 +448,7 @@ app.post("/api/checkout-session", requireFirebaseUser, async (req, res) => {
         "PayMongo checkout creation failed:",
         JSON.stringify(paymongoData.errors || [])
       );
+
       return res.status(502).json({
         error: "PayMongo couldn't create checkout. Please try again.",
       });
@@ -258,6 +463,7 @@ app.post("/api/checkout-session", requireFirebaseUser, async (req, res) => {
       !checkoutUrl.startsWith("https://")
     ) {
       console.error("PayMongo returned an unexpected checkout response.");
+
       return res.status(502).json({
         error: "PayMongo returned an invalid checkout response.",
       });
@@ -289,13 +495,14 @@ app.post("/api/checkout-session", requireFirebaseUser, async (req, res) => {
     });
   } catch (error) {
     console.error("Checkout error:", error.message);
+
     return res.status(400).json({
       error: error.message || "Couldn't prepare checkout.",
     });
   }
 });
 
-// Redirect destinations only; visiting these does NOT prove payment succeeded.
+// These pages are redirects only. They do not confirm payment.
 app.get("/payment/success", (req, res) => {
   res.status(200).send(
     "<h2>MotoVision</h2><p>You've returned from checkout. Payment confirmation is processed separately; you may return to the app.</p>"

@@ -1,19 +1,21 @@
 
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { onAuthStateChanged } from "firebase/auth";
+import { Stack, useRouter } from "expo-router";
+import { signOut } from "firebase/auth";
 import {
     collection,
     doc,
     getDoc,
     onSnapshot,
 } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
+    BackHandler,
     RefreshControl,
     ScrollView,
+    StatusBar,
     StyleSheet,
     Text,
     TouchableOpacity,
@@ -21,6 +23,10 @@ import {
 } from "react-native";
 
 import { auth, db } from "../firebaseConfig";
+
+// --------------------------------------------------
+// TYPES
+// --------------------------------------------------
 
 type Appointment = {
   id: string;
@@ -37,84 +43,85 @@ type Appointment = {
   createdAt?: any;
   appointmentDate?: any;
   date?: any;
-  [key: string]: any;
 };
 
-function formatDate(value: any): string {
-  if (!value) return "Date not available";
+// --------------------------------------------------
+// HELPERS
+// --------------------------------------------------
 
-  try {
-    let date: Date;
+const getDateValue = (value: any): Date | null => {
+  if (!value) return null;
 
-    if (typeof value?.toDate === "function") {
-      date = value.toDate();
-    } else if (value instanceof Date) {
-      date = value;
-    } else if (typeof value === "string" || typeof value === "number") {
-      date = new Date(value);
-    } else {
-      return "Date not available";
-    }
-
-    if (Number.isNaN(date.getTime())) {
-      return "Date not available";
-    }
-
-    return date.toLocaleString("en-PH", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  } catch {
-    return "Date not available";
+  if (value?.toDate && typeof value.toDate === "function") {
+    return value.toDate();
   }
-}
 
-function normalizeStatus(status?: string): string {
-  return (status || "pending").trim().toLowerCase();
-}
+  if (value instanceof Date) {
+    return value;
+  }
 
-function getStatusStyle(status?: string) {
-  switch (normalizeStatus(status)) {
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  return null;
+};
+
+const formatDate = (value: any) => {
+  const date = getDateValue(value);
+
+  if (!date) return "Date unavailable";
+
+  return date.toLocaleDateString("en-PH", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+};
+
+const formatDateTime = (value: any) => {
+  const date = getDateValue(value);
+
+  if (!date) return "Date unavailable";
+
+  return date.toLocaleString("en-PH", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
+const getStatusColor = (status?: string) => {
+  switch ((status || "").toLowerCase()) {
     case "approved":
-      return {
-        backgroundColor: "#ECFDF5",
-        color: "#059669",
-        icon: "checkmark-circle-outline" as const,
-      };
-
-    case "rejected":
-      return {
-        backgroundColor: "#FEF2F2",
-        color: "#DC2626",
-        icon: "close-circle-outline" as const,
-      };
-
+      return "#16A34A";
     case "completed":
-      return {
-        backgroundColor: "#EFF6FF",
-        color: "#2563EB",
-        icon: "checkmark-done-circle-outline" as const,
-      };
-
+      return "#2563EB";
+    case "rejected":
     case "cancelled":
-    case "canceled":
-      return {
-        backgroundColor: "#F1F5F9",
-        color: "#64748B",
-        icon: "ban-outline" as const,
-      };
-
+      return "#DC2626";
+    case "pending":
+      return "#D97706";
     default:
-      return {
-        backgroundColor: "#FFF7ED",
-        color: "#EA580C",
-        icon: "time-outline" as const,
-      };
+      return "#64748B";
   }
-}
+};
+
+const getCustomerName = (item: Appointment) =>
+  item.customerName || item.userName || item.name || "Unknown Customer";
+
+const getCustomerEmail = (item: Appointment) =>
+  item.userEmail || item.email || "No email provided";
+
+const getServiceName = (item: Appointment) =>
+  item.serviceType || item.service || "General Service";
+
+// --------------------------------------------------
+// MECHANIC DASHBOARD
+// --------------------------------------------------
 
 export default function MechanicDashboard() {
   const router = useRouter();
@@ -122,1033 +129,909 @@ export default function MechanicDashboard() {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [checkingRole, setCheckingRole] = useState(true);
-  const [mechanicName, setMechanicName] = useState("Mechanic");
+  const [authorized, setAuthorized] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  // ------------------------------------------------
+  // DISABLE BACK NAVIGATION
+  // Android hardware Back redirects to login.
+  // The header and swipe-back gesture are disabled.
+  // ------------------------------------------------
 
   useEffect(() => {
-    let unsubscribeAppointments: (() => void) | undefined;
-    let cancelled = false;
-
-    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
-      if (unsubscribeAppointments) {
-        unsubscribeAppointments();
-        unsubscribeAppointments = undefined;
+    const backHandler = BackHandler.addEventListener(
+      "hardwareBackPress",
+      () => {
+        router.replace("/(auth)/login");
+        return true;
       }
+    );
 
-      if (!user) {
-        if (!cancelled) {
-          setCheckingRole(false);
-          setLoading(false);
-          Alert.alert(
-            "Login Required",
-            "Please log in to access the mechanic dashboard."
-          );
-          router.replace("/(auth)/login");
-        }
-        return;
-      }
+    return () => backHandler.remove();
+  }, [router]);
 
+  // ------------------------------------------------
+  // CHECK MECHANIC ROLE
+  // ------------------------------------------------
+
+  useEffect(() => {
+    let active = true;
+
+    const verifyMechanic = async () => {
       try {
-        setCheckingRole(true);
+        const currentUser = auth.currentUser;
 
-        const userRef = doc(db, "users", user.uid);
+        if (!currentUser) {
+          router.replace("/(auth)/login");
+          return;
+        }
+
+        const userRef = doc(db, "users", currentUser.uid);
         const userSnapshot = await getDoc(userRef);
 
-        if (cancelled) return;
+        if (!active) return;
 
         if (!userSnapshot.exists()) {
-          Alert.alert(
-            "Account Not Found",
-            "Your user profile could not be found."
-          );
-          await auth.signOut();
+          await signOut(auth);
           router.replace("/(auth)/login");
           return;
         }
 
-        const userData = userSnapshot.data();
+        const role = userSnapshot.data()?.role;
 
-        if (userData.role !== "mechanic") {
-          Alert.alert(
-            "Access Denied",
-            "This account is not authorized to access the mechanic dashboard."
-          );
-
-          router.replace(
-            userData.role === "admin"
-              ? "/admin"
-              : "/(tabs)"
-          );
-          return;
-        }
-
-        setMechanicName(
-          userData.fullName ||
-            userData.name ||
-            user.displayName ||
-            "Mechanic"
-        );
-
-        setCheckingRole(false);
-
-        unsubscribeAppointments = onSnapshot(
-          collection(db, "appointments"),
-          (snapshot) => {
-            const appointmentList: Appointment[] = snapshot.docs.map(
-              (appointmentDoc) => ({
-                id: appointmentDoc.id,
-                ...appointmentDoc.data(),
-              })
-            );
-
-            appointmentList.sort((a, b) => {
-              const dateA =
-                a.createdAt?.toDate?.()?.getTime?.() ||
-                new Date(a.createdAt || 0).getTime() ||
-                0;
-
-              const dateB =
-                b.createdAt?.toDate?.()?.getTime?.() ||
-                new Date(b.createdAt || 0).getTime() ||
-                0;
-
-              return dateB - dateA;
-            });
-
-            setAppointments(appointmentList);
-            setLoading(false);
-            setRefreshing(false);
-          },
-          (error) => {
-            console.error("Appointments listener error:", error);
-
-            setLoading(false);
-            setRefreshing(false);
-
-            Alert.alert(
-              "Unable to Load Appointments",
-              "The app could not retrieve appointment records. Please check your connection and Firestore permissions."
-            );
+        if (role !== "mechanic") {
+          if (role === "admin") {
+            router.replace("/admin");
+          } else {
+            router.replace("/(tabs)");
           }
-        );
+          return;
+        }
+
+        setAuthorized(true);
       } catch (error) {
-        console.error("Mechanic role verification failed:", error);
+        console.error("Mechanic authorization error:", error);
 
-        if (!cancelled) {
-          setCheckingRole(false);
+        if (active) {
+          setErrorMessage("Unable to verify your account. Please log in again.");
+        }
+      } finally {
+        if (active) {
           setLoading(false);
-
-          Alert.alert(
-            "Verification Failed",
-            "We could not verify your mechanic account. Please log in again."
-          );
-
-          router.replace("/(auth)/login");
         }
       }
-    });
+    };
+
+    verifyMechanic();
 
     return () => {
-      cancelled = true;
-      unsubscribeAuth();
-
-      if (unsubscribeAppointments) {
-        unsubscribeAppointments();
-      }
+      active = false;
     };
   }, [router]);
 
-  const counts = useMemo(() => {
-    const result = {
-      total: appointments.length,
-      pending: 0,
-      approved: 0,
-      rejected: 0,
-      completed: 0,
-      cancelled: 0,
-    };
+  // ------------------------------------------------
+  // LISTEN TO ALL APPOINTMENTS
+  // ------------------------------------------------
 
-    appointments.forEach((appointment) => {
-      const status = normalizeStatus(appointment.status);
+  useEffect(() => {
+    if (!authorized) return;
 
-      if (status === "pending") result.pending++;
-      else if (status === "approved") result.approved++;
-      else if (status === "rejected") result.rejected++;
-      else if (status === "completed") result.completed++;
-      else if (status === "cancelled" || status === "canceled") {
-        result.cancelled++;
+    setLoading(true);
+    setErrorMessage("");
+
+    const unsubscribe = onSnapshot(
+      collection(db, "appointments"),
+      (snapshot) => {
+        const appointmentList: Appointment[] = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+
+        appointmentList.sort((a, b) => {
+          const dateA = getDateValue(a.createdAt)?.getTime() || 0;
+          const dateB = getDateValue(b.createdAt)?.getTime() || 0;
+
+          return dateB - dateA;
+        });
+
+        setAppointments(appointmentList);
+        setLoading(false);
+        setRefreshing(false);
+      },
+      (error) => {
+        console.error("Appointment listener error:", error);
+
+        setErrorMessage(
+          "Unable to load appointments. Please check your connection or access permissions."
+        );
+
+        setLoading(false);
+        setRefreshing(false);
       }
-    });
+    );
 
-    return result;
-  }, [appointments]);
+    return () => unsubscribe();
+  }, [authorized]);
 
-  const handleBack = () => {
-    if (router.canGoBack()) {
-      router.back();
-    } else {
-      router.replace("/(tabs)");
-    }
-  };
+  // ------------------------------------------------
+  // REFRESH
+  // ------------------------------------------------
 
-  const handleRefresh = () => {
+  const onRefresh = useCallback(() => {
     setRefreshing(true);
 
-    // Firestore's onSnapshot listener is already real-time.
-    // This refresh indicator simply gives the user feedback.
+    // The Firestore listener updates automatically.
+    // This gives the user a brief refresh indicator.
     setTimeout(() => {
       setRefreshing(false);
     }, 600);
+  }, []);
+
+  // ------------------------------------------------
+  // LOGOUT
+  // ------------------------------------------------
+
+  const handleLogout = () => {
+    Alert.alert(
+      "Log Out",
+      "Are you sure you want to log out?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Log Out",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await signOut(auth);
+              router.replace("/(auth)/login");
+            } catch (error) {
+              console.error("Logout error:", error);
+              Alert.alert("Error", "Unable to log out. Please try again.");
+            }
+          },
+        },
+      ]
+    );
   };
 
-  if (checkingRole || loading) {
-    return (
-      <View style={styles.loadingScreen}>
-        <View style={styles.loadingIcon}>
-          <Ionicons
-            name="construct-outline"
-            size={32}
-            color="#0879D9"
-          />
-        </View>
+  // ------------------------------------------------
+  // APPOINTMENT COUNTS
+  // ------------------------------------------------
 
-        <ActivityIndicator
-          size="large"
-          color="#0879D9"
+  const pendingCount = appointments.filter(
+    (a) => (a.status || "").toLowerCase() === "pending"
+  ).length;
+
+  const approvedCount = appointments.filter(
+    (a) => (a.status || "").toLowerCase() === "approved"
+  ).length;
+
+  const completedCount = appointments.filter(
+    (a) => (a.status || "").toLowerCase() === "completed"
+  ).length;
+
+  const cancelledCount = appointments.filter((a) =>
+    ["cancelled", "rejected"].includes((a.status || "").toLowerCase())
+  ).length;
+
+  // ------------------------------------------------
+  // LOADING SCREEN
+  // ------------------------------------------------
+
+  if (loading) {
+    return (
+      <>
+        <Stack.Screen
+          options={{
+            headerShown: false,
+            gestureEnabled: false,
+          }}
         />
 
-        <Text style={styles.loadingTitle}>
-          Loading Mechanic Dashboard
-        </Text>
-
-        <Text style={styles.loadingSubtitle}>
-          Verifying your account and retrieving appointments...
-        </Text>
-      </View>
+        <View style={styles.loadingContainer}>
+          <StatusBar barStyle="dark-content" backgroundColor="#F5F7FB" />
+          <ActivityIndicator size="large" color="#2563EB" />
+          <Text style={styles.loadingText}>
+            Loading mechanic dashboard...
+          </Text>
+        </View>
+      </>
     );
   }
 
-  return (
-    <View style={styles.container}>
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            tintColor="#0879D9"
+  // ------------------------------------------------
+  // ERROR SCREEN
+  // ------------------------------------------------
+
+  if (!authorized && errorMessage) {
+    return (
+      <>
+        <Stack.Screen
+          options={{
+            headerShown: false,
+            gestureEnabled: false,
+          }}
+        />
+
+        <View style={styles.loadingContainer}>
+          <StatusBar barStyle="dark-content" backgroundColor="#F5F7FB" />
+
+          <Ionicons
+            name="alert-circle-outline"
+            size={55}
+            color="#DC2626"
           />
-        }
-      >
-        {/* Header */}
-        <View style={styles.topBar}>
+
+          <Text style={styles.errorTitle}>Access Error</Text>
+          <Text style={styles.errorText}>{errorMessage}</Text>
+
           <TouchableOpacity
-            style={styles.backButton}
-            activeOpacity={0.75}
-            onPress={handleBack}
+            style={styles.loginButton}
+            onPress={() => router.replace("/(auth)/login")}
           >
-            <Ionicons
-              name="arrow-back"
-              size={21}
-              color="#24364B"
-            />
+            <Text style={styles.loginButtonText}>Return to Login</Text>
           </TouchableOpacity>
-
-          <View style={styles.brandText}>
-            <Text style={styles.brandName}>
-              MotoVision
-            </Text>
-            <Text style={styles.brandCaption}>
-              MECHANIC WORKSPACE
-            </Text>
-          </View>
-
-          <View style={styles.roleBadge}>
-            <Ionicons
-              name="construct-outline"
-              size={15}
-              color="#0879D9"
-            />
-            <Text style={styles.roleBadgeText}>
-              MECHANIC
-            </Text>
-          </View>
         </View>
+      </>
+    );
+  }
 
-        {/* Welcome Card */}
-        <View style={styles.heroCard}>
-          <View style={styles.heroTop}>
-            <View style={styles.heroIcon}>
-              <Ionicons
-                name="speedometer-outline"
-                size={29}
-                color="#FFFFFF"
-              />
+  // ------------------------------------------------
+  // MAIN DASHBOARD
+  // ------------------------------------------------
+
+  return (
+    <>
+      <Stack.Screen
+        options={{
+          headerShown: false,
+          gestureEnabled: false,
+        }}
+      />
+
+      <View style={styles.container}>
+        <StatusBar barStyle="light-content" backgroundColor="#123B70" />
+
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={["#2563EB"]}
+              tintColor="#2563EB"
+            />
+          }
+        >
+          {/* HEADER */}
+
+          <View style={styles.header}>
+            <View style={styles.headerTop}>
+              <View style={styles.headerTitleContainer}>
+                <View style={styles.logoContainer}>
+                  <Ionicons
+                    name="construct"
+                    size={25}
+                    color="#FFFFFF"
+                  />
+                </View>
+
+                <View>
+                  <Text style={styles.brandName}>MotoVision</Text>
+                  <Text style={styles.headerSubtitle}>
+                    MECHANIC PORTAL
+                  </Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={styles.logoutButton}
+                onPress={handleLogout}
+                activeOpacity={0.8}
+              >
+                <Ionicons
+                  name="log-out-outline"
+                  size={20}
+                  color="#FFFFFF"
+                />
+                <Text style={styles.logoutText}>Logout</Text>
+              </TouchableOpacity>
             </View>
 
-            <View style={styles.onlineBadge}>
-              <View style={styles.onlineDot} />
-              <Text style={styles.onlineText}>
-                LIVE UPDATES
+            <View style={styles.welcomeContainer}>
+              <Text style={styles.welcomeLabel}>WELCOME BACK</Text>
+              <Text style={styles.welcomeTitle}>
+                Mechanic Dashboard
+              </Text>
+              <Text style={styles.welcomeDescription}>
+                View and monitor customer service appointments.
               </Text>
             </View>
           </View>
 
-          <Text style={styles.heroGreeting}>
-            Welcome back,
-          </Text>
+          {/* MAIN CONTENT */}
 
-          <Text style={styles.heroName}>
-            {mechanicName}
-          </Text>
+          <View style={styles.content}>
+            {/* SUMMARY */}
 
-          <Text style={styles.heroDescription}>
-            Keep track of customer appointments and stay updated
-            with the latest service requests.
-          </Text>
-
-          <View style={styles.heroDivider} />
-
-          <View style={styles.heroFooter}>
-            <Ionicons
-              name="eye-outline"
-              size={17}
-              color="#BAE6FD"
-            />
-            <Text style={styles.heroFooterText}>
-              VIEW-ONLY APPOINTMENT ACCESS
-            </Text>
-          </View>
-        </View>
-
-        {/* Overview */}
-        <View style={styles.sectionHeading}>
-          <View>
-            <Text style={styles.eyebrow}>
-              APPOINTMENT OVERVIEW
-            </Text>
-            <Text style={styles.sectionTitle}>
-              Booking Summary
-            </Text>
-          </View>
-
-          <View style={styles.totalBadge}>
-            <Text style={styles.totalNumber}>
-              {counts.total}
-            </Text>
-            <Text style={styles.totalLabel}>
-              TOTAL
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.statsGrid}>
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: "#FFF7ED" }]}>
-              <Ionicons
-                name="time-outline"
-                size={20}
-                color="#EA580C"
-              />
+            <View style={styles.sectionHeading}>
+              <Text style={styles.sectionTitle}>Appointment Overview</Text>
+              <Text style={styles.sectionSubtitle}>
+                Live appointment records
+              </Text>
             </View>
-            <Text style={styles.statNumber}>
-              {counts.pending}
-            </Text>
-            <Text style={styles.statLabel}>
-              Pending
-            </Text>
-          </View>
 
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: "#ECFDF5" }]}>
-              <Ionicons
-                name="checkmark-circle-outline"
-                size={20}
-                color="#059669"
-              />
+            <View style={styles.statsGrid}>
+              <View style={styles.statCard}>
+                <View style={[styles.statIcon, { backgroundColor: "#DBEAFE" }]}>
+                  <Ionicons name="calendar-outline" size={21} color="#2563EB" />
+                </View>
+                <Text style={styles.statNumber}>{appointments.length}</Text>
+                <Text style={styles.statLabel}>Total</Text>
+              </View>
+
+              <View style={styles.statCard}>
+                <View style={[styles.statIcon, { backgroundColor: "#FEF3C7" }]}>
+                  <Ionicons name="time-outline" size={21} color="#D97706" />
+                </View>
+                <Text style={styles.statNumber}>{pendingCount}</Text>
+                <Text style={styles.statLabel}>Pending</Text>
+              </View>
+
+              <View style={styles.statCard}>
+                <View style={[styles.statIcon, { backgroundColor: "#DCFCE7" }]}>
+                  <Ionicons name="checkmark-circle-outline" size={21} color="#16A34A" />
+                </View>
+                <Text style={styles.statNumber}>{approvedCount}</Text>
+                <Text style={styles.statLabel}>Approved</Text>
+              </View>
+
+              <View style={styles.statCard}>
+                <View style={[styles.statIcon, { backgroundColor: "#DBEAFE" }]}>
+                  <Ionicons name="checkmark-done-outline" size={21} color="#2563EB" />
+                </View>
+                <Text style={styles.statNumber}>{completedCount}</Text>
+                <Text style={styles.statLabel}>Completed</Text>
+              </View>
             </View>
-            <Text style={styles.statNumber}>
-              {counts.approved}
-            </Text>
-            <Text style={styles.statLabel}>
-              Approved
-            </Text>
-          </View>
 
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: "#FEF2F2" }]}>
+            <View style={styles.cancelledSummary}>
               <Ionicons
                 name="close-circle-outline"
-                size={20}
+                size={19}
                 color="#DC2626"
               />
-            </View>
-            <Text style={styles.statNumber}>
-              {counts.rejected}
-            </Text>
-            <Text style={styles.statLabel}>
-              Rejected
-            </Text>
-          </View>
-
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: "#EFF6FF" }]}>
-              <Ionicons
-                name="checkmark-done-circle-outline"
-                size={20}
-                color="#2563EB"
-              />
-            </View>
-            <Text style={styles.statNumber}>
-              {counts.completed}
-            </Text>
-            <Text style={styles.statLabel}>
-              Completed
-            </Text>
-          </View>
-
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: "#F1F5F9" }]}>
-              <Ionicons
-                name="ban-outline"
-                size={20}
-                color="#64748B"
-              />
-            </View>
-            <Text style={styles.statNumber}>
-              {counts.cancelled}
-            </Text>
-            <Text style={styles.statLabel}>
-              Cancelled
-            </Text>
-          </View>
-        </View>
-
-        {/* Appointments */}
-        <View style={styles.appointmentsHeading}>
-          <View>
-            <Text style={styles.eyebrow}>
-              CUSTOMER BOOKINGS
-            </Text>
-            <Text style={styles.sectionTitle}>
-              All Appointments
-            </Text>
-          </View>
-
-          <View style={styles.appointmentCountBadge}>
-            <Text style={styles.appointmentCountText}>
-              {appointments.length} records
-            </Text>
-          </View>
-        </View>
-
-        {appointments.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <View style={styles.emptyIcon}>
-              <Ionicons
-                name="calendar-outline"
-                size={34}
-                color="#94A3B8"
-              />
+              <Text style={styles.cancelledText}>
+                {cancelledCount} cancelled or rejected appointment(s)
+              </Text>
             </View>
 
-            <Text style={styles.emptyTitle}>
-              No Appointments Yet
-            </Text>
+            {/* APPOINTMENTS */}
 
-            <Text style={styles.emptySubtitle}>
-              Customer bookings will appear here once they are
-              submitted through MotoVision.
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.appointmentsList}>
-            {appointments.map((appointment, index) => {
-              const statusStyle = getStatusStyle(
-                appointment.status
-              );
+            <View style={styles.appointmentsHeading}>
+              <View>
+                <Text style={styles.sectionTitle}>Customer Appointments</Text>
+                <Text style={styles.sectionSubtitle}>
+                  All registered customer requests
+                </Text>
+              </View>
 
-              const customerName =
-                appointment.userName ||
-                appointment.customerName ||
-                appointment.name ||
-                "Customer";
+              <View style={styles.liveBadge}>
+                <View style={styles.liveDot} />
+                <Text style={styles.liveText}>LIVE</Text>
+              </View>
+            </View>
 
-              const customerEmail =
-                appointment.userEmail ||
-                appointment.email ||
-                "Email not available";
+            {errorMessage ? (
+              <View style={styles.errorCard}>
+                <Ionicons
+                  name="alert-circle-outline"
+                  size={22}
+                  color="#DC2626"
+                />
+                <Text style={styles.errorCardText}>{errorMessage}</Text>
+              </View>
+            ) : null}
 
-              const serviceType =
-                appointment.serviceType ||
-                appointment.service ||
-                "General Service";
+            {appointments.length === 0 ? (
+              <View style={styles.emptyContainer}>
+                <View style={styles.emptyIcon}>
+                  <Ionicons
+                    name="calendar-clear-outline"
+                    size={38}
+                    color="#94A3B8"
+                  />
+                </View>
 
-              return (
-                <View
-                  key={appointment.id}
-                  style={styles.appointmentCard}
-                >
-                  <View style={styles.appointmentTop}>
-                    <View style={styles.appointmentNumber}>
-                      <Text style={styles.appointmentNumberText}>
-                        {String(index + 1).padStart(2, "0")}
-                      </Text>
-                    </View>
+                <Text style={styles.emptyTitle}>No Appointments Yet</Text>
+                <Text style={styles.emptyDescription}>
+                  Customer service appointments will appear here once they
+                  have been submitted.
+                </Text>
+              </View>
+            ) : (
+              appointments.map((item) => {
+                const status = item.status || "Pending";
 
-                    <View style={styles.appointmentTopInfo}>
-                      <Text style={styles.customerName}>
-                        {customerName}
-                      </Text>
-                      <Text style={styles.customerEmail}>
-                        {customerEmail}
-                      </Text>
-                    </View>
+                return (
+                  <View key={item.id} style={styles.appointmentCard}>
+                    {/* CARD TOP */}
 
-                    <View
-                      style={[
-                        styles.statusBadge,
-                        { backgroundColor: statusStyle.backgroundColor },
-                      ]}
-                    >
-                      <Ionicons
-                        name={statusStyle.icon}
-                        size={13}
-                        color={statusStyle.color}
-                      />
-                      <Text
-                        style={[
-                          styles.statusText,
-                          { color: statusStyle.color },
-                        ]}
-                      >
-                        {normalizeStatus(appointment.status).toUpperCase()}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.cardDivider} />
-
-                  <View style={styles.detailRow}>
-                    <View style={styles.detailIcon}>
-                      <Ionicons
-                        name="construct-outline"
-                        size={17}
-                        color="#0879D9"
-                      />
-                    </View>
-
-                    <View style={styles.detailContent}>
-                      <Text style={styles.detailLabel}>
-                        SERVICE TYPE
-                      </Text>
-                      <Text style={styles.detailValue}>
-                        {serviceType}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.detailRow}>
-                    <View style={styles.detailIcon}>
-                      <Ionicons
-                        name="calendar-outline"
-                        size={17}
-                        color="#0879D9"
-                      />
-                    </View>
-
-                    <View style={styles.detailContent}>
-                      <Text style={styles.detailLabel}>
-                        DATE SUBMITTED
-                      </Text>
-                      <Text style={styles.detailValue}>
-                        {formatDate(
-                          appointment.createdAt ||
-                            appointment.appointmentDate ||
-                            appointment.date
-                        )}
-                      </Text>
-                    </View>
-                  </View>
-
-                  {appointment.notes ? (
-                    <View style={styles.messageBox}>
-                      <Text style={styles.messageLabel}>
-                        CUSTOMER NOTES
-                      </Text>
-                      <Text style={styles.messageText}>
-                        {appointment.notes}
-                      </Text>
-                    </View>
-                  ) : null}
-
-                  {appointment.adminMessage ? (
-                    <View style={styles.adminMessageBox}>
-                      <View style={styles.adminMessageHeading}>
+                    <View style={styles.cardTop}>
+                      <View style={styles.customerIcon}>
                         <Ionicons
-                          name="chatbox-ellipses-outline"
-                          size={15}
-                          color="#0879D9"
+                          name="person-outline"
+                          size={22}
+                          color="#2563EB"
                         />
-                        <Text style={styles.adminMessageLabel}>
-                          ADMIN MESSAGE
+                      </View>
+
+                      <View style={styles.customerDetails}>
+                        <Text style={styles.customerName}>
+                          {getCustomerName(item)}
+                        </Text>
+
+                        <Text style={styles.customerEmail}>
+                          {getCustomerEmail(item)}
                         </Text>
                       </View>
 
-                      <Text style={styles.messageText}>
-                        {appointment.adminMessage}
+                      <View
+                        style={[
+                          styles.statusBadge,
+                          {
+                            backgroundColor: `${getStatusColor(status)}18`,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.statusText,
+                            { color: getStatusColor(status) },
+                          ]}
+                        >
+                          {status}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.cardDivider} />
+
+                    {/* SERVICE */}
+
+                    <View style={styles.detailRow}>
+                      <Ionicons
+                        name="construct-outline"
+                        size={18}
+                        color="#64748B"
+                      />
+
+                      <View style={styles.detailContent}>
+                        <Text style={styles.detailLabel}>Service Requested</Text>
+                        <Text style={styles.detailValue}>
+                          {getServiceName(item)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* APPOINTMENT DATE */}
+
+                    <View style={styles.detailRow}>
+                      <Ionicons
+                        name="calendar-outline"
+                        size={18}
+                        color="#64748B"
+                      />
+
+                      <View style={styles.detailContent}>
+                        <Text style={styles.detailLabel}>Appointment Date</Text>
+                        <Text style={styles.detailValue}>
+                          {formatDate(item.appointmentDate || item.date)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* SUBMISSION DATE */}
+
+                    <View style={styles.detailRow}>
+                      <Ionicons
+                        name="time-outline"
+                        size={18}
+                        color="#64748B"
+                      />
+
+                      <View style={styles.detailContent}>
+                        <Text style={styles.detailLabel}>Submitted</Text>
+                        <Text style={styles.detailValue}>
+                          {formatDateTime(item.createdAt)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* CUSTOMER NOTES */}
+
+                    {item.notes ? (
+                      <View style={styles.notesContainer}>
+                        <Text style={styles.detailLabel}>Customer Notes</Text>
+                        <Text style={styles.notesText}>{item.notes}</Text>
+                      </View>
+                    ) : null}
+
+                    {/* ADMIN MESSAGE */}
+
+                    {item.adminMessage ? (
+                      <View style={styles.adminMessageContainer}>
+                        <Text style={styles.detailLabel}>Admin Message</Text>
+                        <Text style={styles.adminMessageText}>
+                          {item.adminMessage}
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    <View style={styles.readOnlyFooter}>
+                      <Ionicons
+                        name="eye-outline"
+                        size={15}
+                        color="#64748B"
+                      />
+                      <Text style={styles.readOnlyText}>
+                        View only · Managed by administrator
                       </Text>
                     </View>
-                  ) : null}
-
-                  <View style={styles.readOnlyFooter}>
-                    <Ionicons
-                      name="lock-closed-outline"
-                      size={13}
-                      color="#94A3B8"
-                    />
-                    <Text style={styles.readOnlyText}>
-                      Read-only appointment record
-                    </Text>
                   </View>
-                </View>
-              );
-            })}
-          </View>
-        )}
+                );
+              })
+            )}
 
-        {/* Footer */}
-        <View style={styles.footer}>
-          <Ionicons
-            name="shield-checkmark-outline"
-            size={16}
-            color="#94A3B8"
-          />
-          <Text style={styles.footerText}>
-            MOTOVISION MECHANIC WORKSPACE
-          </Text>
-        </View>
-      </ScrollView>
-    </View>
+            {/* FOOTER */}
+
+            <View style={styles.footer}>
+              <Ionicons
+                name="shield-checkmark-outline"
+                size={18}
+                color="#64748B"
+              />
+              <Text style={styles.footerText}>
+                MotoVision Mechanic Portal
+              </Text>
+              <Text style={styles.footerSubtext}>
+                Appointment records are provided for viewing only.
+              </Text>
+            </View>
+          </View>
+        </ScrollView>
+      </View>
+    </>
   );
 }
+
+// --------------------------------------------------
+// STYLES
+// --------------------------------------------------
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F3F7FC",
+    backgroundColor: "#F5F7FB",
   },
 
-  content: {
-    paddingHorizontal: 20,
-    paddingTop: 54,
-    paddingBottom: 45,
-  },
-
-  loadingScreen: {
+  loadingContainer: {
     flex: 1,
-    backgroundColor: "#F3F7FC",
-    alignItems: "center",
+    backgroundColor: "#F5F7FB",
     justifyContent: "center",
-    padding: 30,
-  },
-
-  loadingIcon: {
-    width: 68,
-    height: 68,
-    borderRadius: 22,
-    backgroundColor: "#E0F2FE",
     alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 22,
+    padding: 25,
   },
 
-  loadingTitle: {
-    color: "#172B45",
-    fontSize: 17,
-    fontWeight: "900",
-    marginTop: 18,
+  loadingText: {
+    marginTop: 15,
+    color: "#64748B",
+    fontSize: 14,
   },
 
-  loadingSubtitle: {
-    color: "#7A8BA1",
-    fontSize: 12,
+  errorTitle: {
+    marginTop: 15,
+    fontSize: 21,
+    fontWeight: "800",
+    color: "#1E293B",
+  },
+
+  errorText: {
+    marginTop: 8,
+    color: "#64748B",
+    fontSize: 14,
     textAlign: "center",
-    lineHeight: 18,
-    marginTop: 7,
+    lineHeight: 21,
   },
 
-  topBar: {
+  loginButton: {
+    marginTop: 22,
+    backgroundColor: "#2563EB",
+    paddingHorizontal: 25,
+    paddingVertical: 13,
+    borderRadius: 10,
+  },
+
+  loginButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+
+  // HEADER
+
+  header: {
+    backgroundColor: "#123B70",
+    paddingTop: 55,
+    paddingHorizontal: 22,
+    paddingBottom: 32,
+    borderBottomLeftRadius: 25,
+    borderBottomRightRadius: 25,
+  },
+
+  headerTop: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 24,
-    gap: 12,
+    justifyContent: "space-between",
   },
 
-  backButton: {
-    width: 43,
-    height: 43,
-    borderRadius: 14,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E1E8F0",
+  headerTitleContainer: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
   },
 
-  brandText: {
-    flex: 1,
+  logoContainer: {
+    width: 45,
+    height: 45,
+    backgroundColor: "#2563EB",
+    borderRadius: 13,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 11,
   },
 
   brandName: {
-    fontSize: 21,
-    fontWeight: "900",
-    color: "#14243A",
-    letterSpacing: -0.6,
+    color: "#FFFFFF",
+    fontSize: 19,
+    fontWeight: "800",
+    letterSpacing: 0.3,
   },
 
-  brandCaption: {
-    fontSize: 9,
+  headerSubtitle: {
+    color: "#BFDBFE",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 1.5,
+    marginTop: 3,
+  },
+
+  logoutButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.14)",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 9,
+    gap: 6,
+  },
+
+  logoutText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  welcomeContainer: {
+    marginTop: 32,
+  },
+
+  welcomeLabel: {
+    color: "#93C5FD",
+    fontSize: 11,
     fontWeight: "800",
     letterSpacing: 1.8,
-    color: "#64748B",
-    marginTop: 3,
   },
 
-  roleBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "#E0F2FE",
-  },
-
-  roleBadgeText: {
-    color: "#0879D9",
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 0.7,
-  },
-
-  heroCard: {
-    backgroundColor: "#102B49",
-    borderRadius: 25,
-    padding: 22,
-    marginBottom: 30,
-    shadowColor: "#153A60",
-    shadowOpacity: 0.15,
-    shadowRadius: 15,
-    elevation: 5,
-  },
-
-  heroTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 24,
-  },
-
-  heroIcon: {
-    width: 54,
-    height: 54,
-    borderRadius: 18,
-    backgroundColor: "#0879D9",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  onlineBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "rgba(255,255,255,0.12)",
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 20,
-  },
-
-  onlineDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 5,
-    backgroundColor: "#5EEAD4",
-  },
-
-  onlineText: {
-    color: "#D9F9F2",
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 0.8,
-  },
-
-  heroGreeting: {
-    color: "#B9D1E8",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-
-  heroName: {
+  welcomeTitle: {
     color: "#FFFFFF",
-    fontSize: 28,
-    fontWeight: "900",
-    letterSpacing: -0.7,
-    marginTop: 3,
+    fontSize: 25,
+    fontWeight: "800",
+    marginTop: 7,
   },
 
-  heroDescription: {
-    color: "#D2E1F0",
-    fontSize: 11,
-    lineHeight: 18,
-    marginTop: 9,
+  welcomeDescription: {
+    color: "#DBEAFE",
+    fontSize: 13,
+    marginTop: 8,
+    lineHeight: 20,
   },
 
-  heroDivider: {
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    marginVertical: 17,
-  },
+  // CONTENT
 
-  heroFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  heroFooterText: {
-    color: "#BAE6FD",
-    fontSize: 9,
-    fontWeight: "900",
-    letterSpacing: 1,
+  content: {
+    paddingHorizontal: 19,
+    paddingTop: 25,
+    paddingBottom: 35,
   },
 
   sectionHeading: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 15,
-  },
-
-  eyebrow: {
-    color: "#0879D9",
-    fontSize: 9,
-    fontWeight: "900",
-    letterSpacing: 1.7,
-    marginBottom: 5,
+    marginBottom: 17,
   },
 
   sectionTitle: {
-    color: "#14243A",
-    fontSize: 20,
-    fontWeight: "900",
-    letterSpacing: -0.5,
+    color: "#172B4D",
+    fontSize: 18,
+    fontWeight: "800",
   },
 
-  totalBadge: {
-    minWidth: 52,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: "#E0F2FE",
-    alignItems: "center",
-    justifyContent: "center",
+  sectionSubtitle: {
+    color: "#94A3B8",
+    fontSize: 12,
+    marginTop: 5,
   },
 
-  totalNumber: {
-    color: "#0879D9",
-    fontSize: 17,
-    fontWeight: "900",
-  },
-
-  totalLabel: {
-    color: "#0879D9",
-    fontSize: 7,
-    fontWeight: "900",
-    letterSpacing: 0.8,
-  },
+  // STATISTICS
 
   statsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 30,
+    justifyContent: "space-between",
+    gap: 11,
   },
 
   statCard: {
-    width: "31%",
-    minHeight: 117,
-    flexGrow: 1,
+    width: "48%",
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 12,
+    borderRadius: 15,
+    padding: 15,
     borderWidth: 1,
-    borderColor: "#E7EDF5",
+    borderColor: "#E8EDF5",
   },
 
   statIcon: {
-    width: 35,
-    height: 35,
-    borderRadius: 12,
-    alignItems: "center",
+    width: 38,
+    height: 38,
+    borderRadius: 11,
     justifyContent: "center",
-    marginBottom: 10,
+    alignItems: "center",
+    marginBottom: 13,
   },
 
   statNumber: {
-    color: "#172B45",
-    fontSize: 21,
-    fontWeight: "900",
+    color: "#172B4D",
+    fontSize: 25,
+    fontWeight: "800",
   },
 
   statLabel: {
-    color: "#7A8BA1",
-    fontSize: 10,
-    fontWeight: "700",
-    marginTop: 3,
+    color: "#64748B",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 4,
   },
 
+  cancelledSummary: {
+    backgroundColor: "#FEF2F2",
+    borderRadius: 10,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 12,
+    gap: 9,
+  },
+
+  cancelledText: {
+    color: "#B91C1C",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+
+  // APPOINTMENTS
+
   appointmentsHeading: {
+    marginTop: 32,
+    marginBottom: 17,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 15,
   },
 
-  appointmentCountBadge: {
-    backgroundColor: "#E0F2FE",
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+  liveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#DCFCE7",
+    paddingHorizontal: 9,
+    paddingVertical: 6,
     borderRadius: 20,
+    gap: 6,
   },
 
-  appointmentCountText: {
-    color: "#0879D9",
-    fontSize: 9,
-    fontWeight: "900",
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 5,
+    backgroundColor: "#16A34A",
   },
 
-  emptyCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 21,
-    borderWidth: 1,
-    borderColor: "#E7EDF5",
-    padding: 28,
-    alignItems: "center",
-  },
-
-  emptyIcon: {
-    width: 68,
-    height: 68,
-    borderRadius: 22,
-    backgroundColor: "#F1F5F9",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 14,
-  },
-
-  emptyTitle: {
-    color: "#24364B",
-    fontSize: 16,
-    fontWeight: "900",
-  },
-
-  emptySubtitle: {
-    color: "#94A3B8",
-    fontSize: 11,
-    textAlign: "center",
-    lineHeight: 18,
-    marginTop: 7,
-  },
-
-  appointmentsList: {
-    gap: 14,
+  liveText: {
+    color: "#15803D",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.7,
   },
 
   appointmentCard: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 21,
+    borderRadius: 16,
     padding: 16,
+    marginBottom: 14,
     borderWidth: 1,
-    borderColor: "#E7EDF5",
-    shadowColor: "#1E3A5F",
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
+    borderColor: "#E8EDF5",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.04,
+    shadowRadius: 7,
+    shadowOffset: { width: 0, height: 3 },
     elevation: 2,
   },
 
-  appointmentTop: {
+  cardTop: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
   },
 
-  appointmentNumber: {
-    width: 39,
-    height: 39,
+  customerIcon: {
+    width: 43,
+    height: 43,
     borderRadius: 13,
-    backgroundColor: "#E0F2FE",
+    backgroundColor: "#DBEAFE",
     alignItems: "center",
     justifyContent: "center",
+    marginRight: 11,
   },
 
-  appointmentNumberText: {
-    color: "#0879D9",
-    fontSize: 12,
-    fontWeight: "900",
-  },
-
-  appointmentTopInfo: {
+  customerDetails: {
     flex: 1,
   },
 
   customerName: {
-    color: "#172B45",
-    fontSize: 13,
-    fontWeight: "900",
+    color: "#172B4D",
+    fontSize: 14,
+    fontWeight: "800",
   },
 
   customerEmail: {
     color: "#94A3B8",
-    fontSize: 10,
+    fontSize: 11,
     marginTop: 4,
   },
 
   statusBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
+    paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: 20,
+    marginLeft: 5,
   },
 
   statusText: {
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 0.3,
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "capitalize",
   },
 
   cardDivider: {
     height: 1,
-    backgroundColor: "#F0F3F8",
+    backgroundColor: "#EEF2F7",
     marginVertical: 15,
   },
 
   detailRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 13,
-  },
-
-  detailIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 11,
-    backgroundColor: "#EFF6FF",
-    alignItems: "center",
-    justifyContent: "center",
+    alignItems: "flex-start",
+    marginBottom: 14,
+    gap: 11,
   },
 
   detailContent: {
@@ -1157,89 +1040,140 @@ const styles = StyleSheet.create({
 
   detailLabel: {
     color: "#94A3B8",
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 1,
-    marginBottom: 4,
+    fontSize: 10,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
 
   detailValue: {
-    color: "#24364B",
-    fontSize: 11,
-    fontWeight: "700",
+    color: "#334155",
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: 4,
   },
 
-  messageBox: {
+  notesContainer: {
     backgroundColor: "#F8FAFC",
-    borderRadius: 13,
     padding: 12,
+    borderRadius: 10,
     marginTop: 2,
-    marginBottom: 10,
+    marginBottom: 11,
   },
 
-  messageLabel: {
-    color: "#64748B",
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 1,
-    marginBottom: 6,
-  },
-
-  messageText: {
+  notesText: {
     color: "#475569",
-    fontSize: 11,
-    lineHeight: 17,
+    fontSize: 12,
+    lineHeight: 19,
+    marginTop: 6,
   },
 
-  adminMessageBox: {
+  adminMessageContainer: {
     backgroundColor: "#EFF6FF",
-    borderRadius: 13,
     padding: 12,
-    marginTop: 2,
+    borderRadius: 10,
+    marginBottom: 11,
   },
 
-  adminMessageHeading: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 7,
-  },
-
-  adminMessageLabel: {
-    color: "#0879D9",
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 1,
+  adminMessageText: {
+    color: "#1D4ED8",
+    fontSize: 12,
+    lineHeight: 19,
+    marginTop: 6,
   },
 
   readOnlyFooter: {
+    borderTopWidth: 1,
+    borderTopColor: "#EEF2F7",
+    paddingTop: 12,
+    marginTop: 4,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    borderTopWidth: 1,
-    borderTopColor: "#F0F3F8",
-    marginTop: 14,
-    paddingTop: 11,
   },
 
   readOnlyText: {
     color: "#94A3B8",
-    fontSize: 9,
-    fontWeight: "700",
+    fontSize: 10,
+    fontWeight: "600",
   },
 
-  footer: {
-    flexDirection: "row",
+  // EMPTY STATE
+
+  emptyContainer: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    paddingHorizontal: 25,
+    paddingVertical: 35,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E8EDF5",
+  },
+
+  emptyIcon: {
+    width: 75,
+    height: 75,
+    borderRadius: 25,
+    backgroundColor: "#F1F5F9",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    marginTop: 30,
+    marginBottom: 15,
+  },
+
+  emptyTitle: {
+    color: "#334155",
+    fontSize: 16,
+    fontWeight: "800",
+  },
+
+  emptyDescription: {
+    color: "#94A3B8",
+    fontSize: 12,
+    lineHeight: 19,
+    textAlign: "center",
+    marginTop: 8,
+  },
+
+  // ERRORS
+
+  errorCard: {
+    backgroundColor: "#FEF2F2",
+    borderRadius: 12,
+    padding: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    marginBottom: 14,
+  },
+
+  errorCardText: {
+    flex: 1,
+    color: "#B91C1C",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+
+  // FOOTER
+
+  footer: {
+    alignItems: "center",
+    marginTop: 20,
+    paddingTop: 22,
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
   },
 
   footerText: {
+    color: "#64748B",
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 8,
+  },
+
+  footerSubtext: {
     color: "#94A3B8",
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 1.1,
+    fontSize: 10,
+    marginTop: 5,
+    textAlign: "center",
   },
 });

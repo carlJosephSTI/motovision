@@ -1,8 +1,8 @@
+
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
-import { useState } from "react";
 import {
   ImageBackground,
   ScrollView,
@@ -15,49 +15,53 @@ import {
 import { auth } from "../../firebaseConfig";
 
 type AdminRoute =
-  | "/admin/dashboard"
   | "/admin/inventory"
   | "/admin/appointments"
-  | "/admin/orders";
+  | "/admin/mechanics";
 
 export default function AdminHome() {
   const router = useRouter();
-  const [activeButton, setActiveButton] = useState<AdminRoute | null>(null);
 
   const handlePress = (route: AdminRoute) => {
-    setActiveButton(route);
-    router.replace(route);
+    router.push(route);
   };
 
   const handleLogout = async () => {
-    await signOut(auth);
-    router.replace("/(auth)/login");
+    try {
+      await signOut(auth);
+      router.replace("/(auth)/login");
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
   };
 
   const items = [
     {
-      label: "Dashboard",
-      route: "/admin/dashboard",
-      icon: "grid-outline",
-      colors: ["#00AEEF", "#0077B6"] as const,
-    },
-    {
       label: "Inventory",
-      route: "/admin/inventory",
-      icon: "cube-outline",
-      colors: ["#F7971E", "#FFD200"] as const,
+      subtitle: "Manage motorcycle parts",
+      route: "/admin/inventory" as const,
+      icon: "cube-outline" as const,
+      colors: ["#20C4F4", "#0879D9"] as const,
+      accent: "#0879D9",
+      number: "01",
     },
     {
       label: "Appointments",
-      route: "/admin/appointments",
-      icon: "calendar-outline",
-      colors: ["#7F5AF0", "#6246EA"] as const,
+      subtitle: "Manage customer bookings",
+      route: "/admin/appointments" as const,
+      icon: "calendar-outline" as const,
+      colors: ["#A78BFA", "#6D4AFF"] as const,
+      accent: "#6D4AFF",
+      number: "02",
     },
     {
-      label: "Orders",
-      route: "/admin/orders",
-      icon: "cart-outline",
-      colors: ["#11998E", "#38EF7D"] as const,
+      label: "Manage Mechanics",
+      subtitle: "Authorize and manage repairers",
+      route: "/admin/mechanics" as const,
+      icon: "people-outline" as const,
+      colors: ["#34D399", "#059669"] as const,
+      accent: "#059669",
+      number: "03",
     },
   ];
 
@@ -67,73 +71,162 @@ export default function AdminHome() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.content}
       >
+        <View style={styles.topBar}>
+          <View style={styles.brandMark}>
+            <Ionicons
+              name="speedometer-outline"
+              size={25}
+              color="#FFFFFF"
+            />
+          </View>
+
+          <View style={styles.brandText}>
+            <Text style={styles.brandName}>MotoVision</Text>
+            <Text style={styles.brandCaption}>ADMINISTRATION</Text>
+          </View>
+
+          <TouchableOpacity
+            activeOpacity={0.75}
+            style={styles.logoutButton}
+            onPress={handleLogout}
+          >
+            <Ionicons
+              name="log-out-outline"
+              size={20}
+              color="#334155"
+            />
+          </TouchableOpacity>
+        </View>
+
         <ImageBackground
           source={require("../../assets/images/adminMotorPic.jpg")}
           style={styles.heroCard}
           imageStyle={styles.heroImage}
         >
-          <View style={styles.heroOverlay}>
-            <View style={styles.heroTop}>
-              <View>
-                <Text style={styles.kicker}>ADMIN PANEL</Text>
-                <Text style={styles.heroTitle}>MotoVision</Text>
-                <Text style={styles.heroSubtitle}>
-                  Manage products, orders, and appointments
-                </Text>
-              </View>
-
-              <View style={styles.shieldBox}>
-                <Ionicons name="shield-checkmark" size={30} color="#FFFFFF" />
-              </View>
+          <LinearGradient
+            colors={[
+              "rgba(3, 19, 39, 0.12)",
+              "rgba(3, 19, 39, 0.92)",
+            ]}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={styles.heroOverlay}
+          >
+            <View style={styles.adminBadge}>
+              <View style={styles.statusDot} />
+              <Text style={styles.adminBadgeText}>
+                ADMIN CONTROL CENTER
+              </Text>
             </View>
-          </View>
+
+            <View>
+              <Text style={styles.heroTitle}>
+                Built for control.
+              </Text>
+              <Text style={styles.heroSubtitle}>
+                Everything you need to keep MotoVision running.
+              </Text>
+            </View>
+
+            <View style={styles.heroBottom}>
+              <View style={styles.heroLine} />
+              <Text style={styles.heroBottomText}>
+                YOUR STORE. YOUR CONTROL.
+              </Text>
+            </View>
+          </LinearGradient>
         </ImageBackground>
 
-        <TouchableOpacity
-          activeOpacity={0.85}
-          style={styles.logoutButton}
-          onPress={handleLogout}
-        >
-          <Ionicons name="log-out-outline" size={18} color="#fff" />
-          <Text style={styles.logoutText}>Logout</Text>
-        </TouchableOpacity>
+        <View style={styles.welcomeRow}>
+          <View>
+            <Text style={styles.eyebrow}>WORKSPACE</Text>
+            <Text style={styles.sectionTitle}>
+              What are we managing?
+            </Text>
+          </View>
 
-        <Text style={styles.sectionTitle}>Quick Access</Text>
+          <View style={styles.sectionCount}>
+            <Text style={styles.sectionCountNumber}>03</Text>
+            <Text style={styles.sectionCountLabel}>SECTIONS</Text>
+          </View>
+        </View>
 
-        <View style={styles.grid}>
+        <View style={styles.cards}>
           {items.map((item) => (
             <TouchableOpacity
               key={item.route}
-              style={styles.gridItem}
               activeOpacity={0.88}
-              onPress={() => handlePress(item.route as AdminRoute)}
+              style={styles.cardWrapper}
+              onPress={() => handlePress(item.route)}
             >
-              <LinearGradient
-                colors={item.colors}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.card}
-              >
-                <View style={styles.cardGlow} />
+              <View style={styles.card}>
+                <View style={styles.cardTop}>
+                  <LinearGradient
+                    colors={item.colors}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.iconBox}
+                  >
+                    <Ionicons
+                      name={item.icon}
+                      size={29}
+                      color="#FFFFFF"
+                    />
+                  </LinearGradient>
 
-                <Ionicons
-                  name={item.icon as any}
-                  size={36}
-                  color="#fff"
-                  style={styles.cardIcon}
-                />
+                  <Text style={styles.cardNumber}>
+                    {item.number}
+                  </Text>
+                </View>
 
-                <Text style={styles.cardText}>{item.label}</Text>
+                <View style={styles.cardInfo}>
+                  <Text style={styles.cardTitle}>
+                    {item.label}
+                  </Text>
+                  <Text style={styles.cardSubtitle}>
+                    {item.subtitle}
+                  </Text>
+                </View>
 
-                <Ionicons
-                  name="arrow-forward"
-                  size={18}
-                  color="rgba(255,255,255,0.9)"
-                  style={styles.arrow}
-                />
-              </LinearGradient>
+                <View style={styles.cardFooter}>
+                  <Text
+                    style={[
+                      styles.openText,
+                      { color: item.accent },
+                    ]}
+                  >
+                    Open section
+                  </Text>
+
+                  <View
+                    style={[
+                      styles.arrowCircle,
+                      { backgroundColor: `${item.accent}12` },
+                    ]}
+                  >
+                    <Ionicons
+                      name="arrow-forward"
+                      size={18}
+                      color={item.accent}
+                    />
+                  </View>
+                </View>
+              </View>
             </TouchableOpacity>
           ))}
+        </View>
+
+        <View style={styles.footer}>
+          <View style={styles.footerDivider} />
+          <Ionicons
+            name="shield-checkmark-outline"
+            size={16}
+            color="#94A3B8"
+          />
+          <Text style={styles.footerText}>
+            MOTOVISION ADMINISTRATION
+          </Text>
+          <View style={styles.footerDivider} />
         </View>
       </ScrollView>
     </View>
@@ -143,155 +236,291 @@ export default function AdminHome() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F4F7FB",
+    backgroundColor: "#F3F7FC",
   },
 
   content: {
-    paddingHorizontal: 18,
+    paddingHorizontal: 20,
     paddingTop: 54,
-    paddingBottom: 120,
+    paddingBottom: 45,
   },
 
-  heroCard: {
-    height: 180,
-    borderRadius: 30,
-    overflow: "hidden",
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: "#D9E2EC",
-    shadowColor: "#00AEEF",
-    shadowOpacity: 0.18,
-    shadowRadius: 18,
-    elevation: 6,
-  },
-
-  heroImage: {
-    borderRadius: 30,
-    resizeMode: "cover",
-  },
-
-  heroOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    padding: 20,
-    justifyContent: "space-between",
-  },
-
-  heroTop: {
+  topBar: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
+    alignItems: "center",
+    marginBottom: 24,
   },
 
-  kicker: {
-    color: "#7DD3FC",
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 1.3,
-    marginBottom: 6,
-  },
-
-  heroTitle: {
-    color: "#FFFFFF",
-    fontSize: 32,
-    fontWeight: "900",
-  },
-
-  heroSubtitle: {
-    marginTop: 4,
-    color: "#D1D5DB",
-    fontSize: 13,
-    fontWeight: "700",
-    maxWidth: 220,
-    lineHeight: 18,
-  },
-
-  shieldBox: {
-    width: 58,
-    height: 58,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.14)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.25)",
+  brandMark: {
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    backgroundColor: "#0879D9",
+    alignItems: "center",
     justifyContent: "center",
-    alignItems: "center",
-  },
-
-  logoutButton: {
-    alignSelf: "flex-end",
-    backgroundColor: "#111827",
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    marginBottom: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    shadowColor: "#111827",
+    shadowColor: "#0879D9",
     shadowOpacity: 0.2,
     shadowRadius: 10,
     elevation: 4,
   },
 
-  logoutText: {
-    color: "#fff",
+  brandText: {
+    flex: 1,
+    marginLeft: 12,
+  },
+
+  brandName: {
+    fontSize: 21,
+    fontWeight: "900",
+    color: "#14243A",
+    letterSpacing: -0.6,
+  },
+
+  brandCaption: {
+    fontSize: 9,
     fontWeight: "800",
-    fontSize: 13,
+    letterSpacing: 2,
+    color: "#64748B",
+    marginTop: 3,
+  },
+
+  logoutButton: {
+    width: 43,
+    height: 43,
+    borderRadius: 14,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E1E8F0",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  heroCard: {
+    height: 245,
+    borderRadius: 26,
+    overflow: "hidden",
+    marginBottom: 30,
+    backgroundColor: "#10233D",
+    shadowColor: "#153A60",
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    elevation: 6,
+  },
+
+  heroImage: {
+    resizeMode: "cover",
+  },
+
+  heroOverlay: {
+    flex: 1,
+    padding: 23,
+    justifyContent: "space-between",
+  },
+
+  adminBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.16)",
+    borderColor: "rgba(255,255,255,0.25)",
+    borderWidth: 1,
+    borderRadius: 30,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    gap: 7,
+  },
+
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 5,
+    backgroundColor: "#5EEAD4",
+  },
+
+  adminBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.1,
+  },
+
+  heroTitle: {
+    color: "#FFFFFF",
+    fontSize: 29,
+    fontWeight: "900",
+    letterSpacing: -0.7,
+  },
+
+  heroSubtitle: {
+    color: "#E2EAF5",
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 7,
+    maxWidth: 265,
+  },
+
+  heroBottom: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+
+  heroLine: {
+    width: 27,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: "#38BDF8",
+  },
+
+  heroBottomText: {
+    color: "#D8E6F5",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 1.4,
+  },
+
+  welcomeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 17,
+  },
+
+  eyebrow: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 2,
+    color: "#0879D9",
+    marginBottom: 6,
   },
 
   sectionTitle: {
-    color: "#111827",
-    fontSize: 19,
+    fontSize: 20,
     fontWeight: "900",
-    marginBottom: 14,
+    color: "#14243A",
+    letterSpacing: -0.5,
   },
 
-  grid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
+  sectionCount: {
+    alignItems: "flex-end",
   },
 
-  gridItem: {
-    width: "48%",
-    marginBottom: 15,
+  sectionCountNumber: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#14243A",
+  },
+
+  sectionCountLabel: {
+    fontSize: 8,
+    fontWeight: "800",
+    letterSpacing: 1.2,
+    color: "#94A3B8",
+    marginTop: 1,
+  },
+
+  cards: {
+    gap: 15,
+  },
+
+  cardWrapper: {
+    borderRadius: 23,
+    backgroundColor: "#FFFFFF",
+    shadowColor: "#1E3A5F",
+    shadowOpacity: 0.07,
+    shadowRadius: 14,
+    elevation: 3,
   },
 
   card: {
-    height: 145,
-    borderRadius: 24,
-    padding: 18,
+    minHeight: 184,
+    padding: 20,
+    borderRadius: 23,
+    borderWidth: 1,
+    borderColor: "#E7EDF5",
+    backgroundColor: "#FFFFFF",
     justifyContent: "space-between",
-    overflow: "hidden",
-    shadowColor: "#111827",
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    elevation: 5,
   },
 
-  cardGlow: {
-    position: "absolute",
-    right: -20,
-    bottom: -20,
-    width: 110,
-    height: 110,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.12)",
+  cardTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
 
-  cardIcon: {
-    opacity: 0.95,
+  iconBox: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
   },
 
-  cardText: {
-    color: "#fff",
-    fontSize: 16,
+  cardNumber: {
+    fontSize: 13,
     fontWeight: "900",
+    color: "#CBD5E1",
+    letterSpacing: 1,
   },
 
-  arrow: {
-    position: "absolute",
-    right: 16,
-    bottom: 16,
+  cardInfo: {
+    marginTop: 18,
+    marginBottom: 17,
+  },
+
+  cardTitle: {
+    fontSize: 20,
+    fontWeight: "900",
+    color: "#172B45",
+    letterSpacing: -0.4,
+  },
+
+  cardSubtitle: {
+    fontSize: 12,
+    color: "#7A8BA1",
+    marginTop: 5,
+  },
+
+  cardFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderTopWidth: 1,
+    borderTopColor: "#F0F3F8",
+    paddingTop: 13,
+  },
+
+  openText: {
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  arrowCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  footer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    marginTop: 30,
+  },
+
+  footerDivider: {
+    height: 1,
+    backgroundColor: "#DCE5EF",
+    flex: 1,
+  },
+
+  footerText: {
+    fontSize: 8,
+    fontWeight: "800",
+    letterSpacing: 1.2,
+    color: "#94A3B8",
   },
 });

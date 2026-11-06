@@ -207,8 +207,10 @@ export default function Catalog() {
       const variant = product.variants[state.colorIndex];
       const sideText = product.hasSide ? ` (${state.side})` : "";
       const finalName = `${product.baseName} ${variant.color}${sideText}`;
-      const variantId = `${product.id}_${variant.color}_${state.side}`;
-
+      const variantId = product.hasSide
+  ? `${product.id}_${variant.color}_${state.side}`
+  : `${product.id}_${variant.color}`;
+  
       newItem = {
         productId: variantId,
         name: finalName,

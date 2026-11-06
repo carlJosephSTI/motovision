@@ -1,3 +1,4 @@
+
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import { doc, getDoc } from "firebase/firestore";
@@ -8,6 +9,7 @@ import {
   Image,
   ImageBackground,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   ScrollView,
   StatusBar,
@@ -18,6 +20,9 @@ import {
   View,
 } from "react-native";
 import { auth, db } from "../firebaseConfig";
+
+// Your deployed MotoVision backend.
+const API_BASE_URL = "https://motovisionitsbackend.onrender.com";
 
 const productImages: Record<string, any> = {
   "click160-front-side-matte-red": require("../assets/images/Product_Images/hondaClick160FrontSideMatteRed.jpg"),
@@ -50,7 +55,6 @@ const formatPeso = (amount: number) =>
 
 export default function Checkout() {
   const router = useRouter();
-  const user = auth.currentUser;
 
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,6 +63,7 @@ export default function Checkout() {
   const [summaryExpanded, setSummaryExpanded] = useState(true);
   const [paymentBusy, setPaymentBusy] = useState(false);
 
+  // Load the user's cart and profile.
   const loadCheckoutData = useCallback(async () => {
     setLoading(true);
 
@@ -78,6 +83,7 @@ export default function Checkout() {
       }
 
       const items = (cartSnap.data().items || []) as CartItem[];
+
       setCartItems(
         items.filter(
           (item) =>
@@ -87,25 +93,32 @@ export default function Checkout() {
         )
       );
 
-      // Prefill from the user's existing profile, if available.
+      // Prefill customer details from the user's profile.
       const userSnap = await getDoc(doc(db, "users", userNow.uid));
+
       if (userSnap.exists()) {
         const profile = userSnap.data();
+
         if (profile.name || profile.fullName || profile.displayName) {
           setName(
             profile.name || profile.fullName || profile.displayName || ""
           );
         }
+
         if (profile.contact || profile.contactNumber || profile.phone) {
           setContact(
             String(
-              profile.contact || profile.contactNumber || profile.phone || ""
+              profile.contact ||
+                profile.contactNumber ||
+                profile.phone ||
+                ""
             )
           );
         }
       }
     } catch (error) {
       console.log("Checkout load error:", error);
+
       Alert.alert(
         "Couldn't load checkout",
         "Please check your connection and try again."
@@ -134,8 +147,11 @@ export default function Checkout() {
     0
   );
 
-  const handleProceedToPayment = () => {
-    if (!auth.currentUser) {
+  // Create a PayMongo checkout session and open Hosted Checkout.
+  const handleProceedToPayment = async () => {
+    const currentUser = auth.currentUser;
+
+    if (!currentUser) {
       Alert.alert(
         "Sign in required",
         "Please sign in again before continuing to checkout."
@@ -144,7 +160,10 @@ export default function Checkout() {
     }
 
     if (cartItems.length === 0) {
-      Alert.alert("Your cart is empty", "Add some parts before checking out.");
+      Alert.alert(
+        "Your cart is empty",
+        "Add some parts before checking out."
+      );
       return;
     }
 
@@ -164,12 +183,87 @@ export default function Checkout() {
       return;
     }
 
-    // Payment is deliberately not simulated or marked as successful here.
-    // Next step: call the secure backend that creates the PayMongo Checkout Session.
-    Alert.alert(
-      "Payment setup in progress",
-      "Your checkout details are ready. PayMongo test payments will be enabled after the secure backend is configured. Your cart has not been cleared and no order has been marked as paid."
-    );
+    if (paymentBusy) return;
+
+    setPaymentBusy(true);
+
+    try {
+      // Authenticate the request using the Firebase user's ID token.
+      const idToken = await currentUser.getIdToken();
+
+      // Send product IDs and quantities only.
+      // The backend calculates the real prices.
+      const items = cartItems.map((item) => {
+        let productId = item.productId;
+
+        // Fix the old Click Front Cover ID format.
+        // This product has no Left/Right variant.
+        if (productId.startsWith("click160-front-cover_")) {
+          productId = productId.replace(/_(Left|Right)$/, "");
+        }
+
+        return {
+          productId,
+          quantity: Number(item.quantity),
+        };
+      });
+
+      console.log("Starting MotoVision PayMongo checkout...");
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/checkout-session`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            items,
+            customer: {
+              name: name.trim(),
+              contact: contact.trim(),
+            },
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.message ||
+            result.error ||
+            `Checkout request failed (${response.status}).`
+        );
+      }
+
+      if (!result.checkoutUrl) {
+        throw new Error(
+          "PayMongo did not return a checkout URL. Please try again."
+        );
+      }
+
+      console.log("Checkout session created:", result.referenceNumber);
+
+      // Open PayMongo's secure hosted checkout page.
+      await Linking.openURL(result.checkoutUrl);
+
+      // IMPORTANT:
+      // Do not clear the cart here.
+      // Do not mark the order as paid here.
+      // The verified PayMongo webhook handles payment confirmation.
+    } catch (error: any) {
+      console.error("PayMongo checkout error:", error);
+
+      Alert.alert(
+        "Unable to start payment",
+        error?.message ||
+          "Something went wrong while connecting to PayMongo. Please try again."
+      );
+    } finally {
+      setPaymentBusy(false);
+    }
   };
 
   return (
@@ -189,11 +283,17 @@ export default function Checkout() {
 
         <View style={styles.topBarTitleWrap}>
           <Text style={styles.topBarTitle}>Checkout</Text>
-          <Text style={styles.topBarSubtitle}>One last stop before the ride</Text>
+          <Text style={styles.topBarSubtitle}>
+            One last stop before the ride
+          </Text>
         </View>
 
         <View style={styles.secureBadge}>
-          <Ionicons name="shield-checkmark" size={17} color="#42DDA8" />
+          <Ionicons
+            name="shield-checkmark"
+            size={17}
+            color="#42DDA8"
+          />
           <Text style={styles.secureText}>Secure</Text>
         </View>
       </View>
@@ -205,7 +305,9 @@ export default function Checkout() {
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#31D7F4" />
-            <Text style={styles.loadingText}>Preparing your checkout...</Text>
+            <Text style={styles.loadingText}>
+              Preparing your checkout...
+            </Text>
           </View>
         ) : (
           <>
@@ -220,7 +322,7 @@ export default function Checkout() {
                 imageStyle={styles.bannerImage}
                 resizeMode="cover"
               >
-                {/* The banner artwork already contains its own text, so keep it unobstructed. */}
+                {/* Banner artwork */}
               </ImageBackground>
 
               <View style={styles.progressRow}>
@@ -230,14 +332,18 @@ export default function Checkout() {
                   </View>
                   <Text style={styles.progressDoneText}>Cart</Text>
                 </View>
+
                 <View style={styles.progressLine} />
+
                 <View style={styles.progressStep}>
                   <View style={styles.progressDotActive}>
                     <Text style={styles.progressNumber}>2</Text>
                   </View>
                   <Text style={styles.progressActiveText}>Checkout</Text>
                 </View>
+
                 <View style={styles.progressLine} />
+
                 <View style={styles.progressStep}>
                   <View style={styles.progressDot}>
                     <Text style={styles.progressNumberMuted}>3</Text>
@@ -246,27 +352,43 @@ export default function Checkout() {
                 </View>
               </View>
 
+              {/* ORDER SUMMARY */}
               <View style={styles.sectionCard}>
                 <TouchableOpacity
                   style={styles.sectionHeader}
-                  onPress={() => setSummaryExpanded((current) => !current)}
+                  onPress={() =>
+                    setSummaryExpanded((current) => !current)
+                  }
                   activeOpacity={0.8}
                 >
                   <View style={styles.sectionTitleGroup}>
                     <View style={[styles.iconTile, styles.cyanTile]}>
-                      <Ionicons name="receipt-outline" size={20} color="#20CBEA" />
+                      <Ionicons
+                        name="receipt-outline"
+                        size={20}
+                        color="#20CBEA"
+                      />
                     </View>
+
                     <View>
-                      <Text style={styles.sectionTitle}>Order summary</Text>
+                      <Text style={styles.sectionTitle}>
+                        Order summary
+                      </Text>
                       <Text style={styles.sectionSubtitle}>
-                        {totalQuantity} {totalQuantity === 1 ? "item" : "items"} in your cart
+                        {totalQuantity}{" "}
+                        {totalQuantity === 1 ? "item" : "items"} in your cart
                       </Text>
                     </View>
                   </View>
+
                   <View style={styles.summaryHeaderRight}>
-                    <Text style={styles.summaryHeaderPrice}>{formatPeso(total)}</Text>
+                    <Text style={styles.summaryHeaderPrice}>
+                      {formatPeso(total)}
+                    </Text>
                     <Ionicons
-                      name={summaryExpanded ? "chevron-up" : "chevron-down"}
+                      name={
+                        summaryExpanded ? "chevron-up" : "chevron-down"
+                      }
                       size={19}
                       color="#AEBAC8"
                     />
@@ -277,17 +399,32 @@ export default function Checkout() {
                   <View style={styles.itemsList}>
                     {cartItems.length === 0 ? (
                       <View style={styles.emptyCart}>
-                        <Ionicons name="cart-outline" size={32} color="#8A9BAB" />
-                        <Text style={styles.emptyCartTitle}>Your cart is empty</Text>
+                        <Ionicons
+                          name="cart-outline"
+                          size={32}
+                          color="#8A9BAB"
+                        />
+                        <Text style={styles.emptyCartTitle}>
+                          Your cart is empty
+                        </Text>
                         <Text style={styles.emptyCartText}>
                           Head back to the catalog and pick out some parts.
                         </Text>
+
                         <TouchableOpacity
                           style={styles.browseButton}
-                          onPress={() => router.replace("/(tabs)/catalog")}
+                          onPress={() =>
+                            router.replace("/(tabs)/catalog")
+                          }
                         >
-                          <Text style={styles.browseButtonText}>Browse catalog</Text>
-                          <Ionicons name="arrow-forward" size={15} color="#101821" />
+                          <Text style={styles.browseButtonText}>
+                            Browse catalog
+                          </Text>
+                          <Ionicons
+                            name="arrow-forward"
+                            size={15}
+                            color="#101821"
+                          />
                         </TouchableOpacity>
                       </View>
                     ) : (
@@ -295,20 +432,32 @@ export default function Checkout() {
                         const image = item.imageKey
                           ? productImages[item.imageKey]
                           : undefined;
-                        const quantity = Math.max(0, Number(item.quantity) || 0);
-                        const price = Math.max(0, Number(item.price) || 0);
+
+                        const quantity = Math.max(
+                          0,
+                          Number(item.quantity) || 0
+                        );
+
+                        const price = Math.max(
+                          0,
+                          Number(item.price) || 0
+                        );
 
                         return (
                           <View
                             key={`${item.productId}-${index}`}
                             style={[
                               styles.itemRow,
-                              index < cartItems.length - 1 && styles.itemDivider,
+                              index < cartItems.length - 1 &&
+                                styles.itemDivider,
                             ]}
                           >
                             <View style={styles.itemImageWrap}>
                               {image ? (
-                                <Image source={image} style={styles.itemImage} />
+                                <Image
+                                  source={image}
+                                  style={styles.itemImage}
+                                />
                               ) : (
                                 <View style={styles.itemImageFallback}>
                                   <Ionicons
@@ -319,16 +468,24 @@ export default function Checkout() {
                                 </View>
                               )}
                             </View>
+
                             <View style={styles.itemDetails}>
-                              <Text style={styles.itemName} numberOfLines={2}>
+                              <Text
+                                style={styles.itemName}
+                                numberOfLines={2}
+                              >
                                 {item.name}
                               </Text>
+
                               <View style={styles.itemMetaRow}>
                                 {item.color ? (
                                   <View style={styles.itemTag}>
-                                    <Text style={styles.itemTagText}>{item.color}</Text>
+                                    <Text style={styles.itemTagText}>
+                                      {item.color}
+                                    </Text>
                                   </View>
                                 ) : null}
+
                                 {item.side ? (
                                   <View style={styles.itemTag}>
                                     <Text style={styles.itemTagText}>
@@ -337,10 +494,12 @@ export default function Checkout() {
                                   </View>
                                 ) : null}
                               </View>
+
                               <Text style={styles.itemQuantity}>
                                 Qty: {quantity} × {formatPeso(price)}
                               </Text>
                             </View>
+
                             <Text style={styles.itemLineTotal}>
                               {formatPeso(price * quantity)}
                             </Text>
@@ -355,29 +514,49 @@ export default function Checkout() {
                   <View style={styles.totalBreakdown}>
                     <View style={styles.breakdownRow}>
                       <Text style={styles.breakdownLabel}>Subtotal</Text>
-                      <Text style={styles.breakdownValue}>{formatPeso(total)}</Text>
+                      <Text style={styles.breakdownValue}>
+                        {formatPeso(total)}
+                      </Text>
                     </View>
+
                     <View style={styles.breakdownRow}>
                       <Text style={styles.breakdownLabel}>Delivery</Text>
-                      <Text style={styles.pickupIncluded}>Onsite pickup</Text>
+                      <Text style={styles.pickupIncluded}>
+                        Onsite pickup
+                      </Text>
                     </View>
+
                     <View style={styles.breakdownDivider} />
+
                     <View style={styles.grandTotalRow}>
                       <View>
-                        <Text style={styles.grandTotalLabel}>Total to pay</Text>
-                        <Text style={styles.grandTotalCaption}>PHP · Philippine peso</Text>
+                        <Text style={styles.grandTotalLabel}>
+                          Total to pay
+                        </Text>
+                        <Text style={styles.grandTotalCaption}>
+                          PHP · Philippine peso
+                        </Text>
                       </View>
-                      <Text style={styles.grandTotal}>{formatPeso(total)}</Text>
+
+                      <Text style={styles.grandTotal}>
+                        {formatPeso(total)}
+                      </Text>
                     </View>
                   </View>
                 )}
               </View>
 
+              {/* CUSTOMER DETAILS */}
               <View style={styles.sectionCard}>
                 <View style={styles.sectionHeaderStatic}>
                   <View style={[styles.iconTile, styles.orangeTile]}>
-                    <Ionicons name="person-outline" size={20} color="#FF9B54" />
+                    <Ionicons
+                      name="person-outline"
+                      size={20}
+                      color="#FF9B54"
+                    />
                   </View>
+
                   <View>
                     <Text style={styles.sectionTitle}>Your details</Text>
                     <Text style={styles.sectionSubtitle}>
@@ -387,8 +566,13 @@ export default function Checkout() {
                 </View>
 
                 <Text style={styles.inputLabel}>FULL NAME</Text>
+
                 <View style={styles.inputShell}>
-                  <Ionicons name="person-outline" size={19} color="#93A5B7" />
+                  <Ionicons
+                    name="person-outline"
+                    size={19}
+                    color="#93A5B7"
+                  />
                   <TextInput
                     value={name}
                     onChangeText={setName}
@@ -403,8 +587,13 @@ export default function Checkout() {
                 </View>
 
                 <Text style={styles.inputLabel}>CONTACT NUMBER</Text>
+
                 <View style={styles.inputShell}>
-                  <Ionicons name="call-outline" size={19} color="#93A5B7" />
+                  <Ionicons
+                    name="call-outline"
+                    size={19}
+                    color="#93A5B7"
+                  />
                   <TextInput
                     value={contact}
                     onChangeText={setContact}
@@ -418,20 +607,30 @@ export default function Checkout() {
                     maxLength={20}
                   />
                 </View>
+
                 <Text style={styles.fieldHint}>
-                  We'll use these details if we need to contact you about your order.
+                  We'll use these details if we need to contact you about
+                  your order.
                 </Text>
               </View>
 
+              {/* PAYMENT METHOD */}
               <View style={styles.sectionCard}>
                 <View style={styles.sectionHeaderStatic}>
                   <View style={[styles.iconTile, styles.greenTile]}>
-                    <Ionicons name="card-outline" size={20} color="#48DDA9" />
+                    <Ionicons
+                      name="card-outline"
+                      size={20}
+                      color="#48DDA9"
+                    />
                   </View>
+
                   <View>
-                    <Text style={styles.sectionTitle}>Payment method</Text>
+                    <Text style={styles.sectionTitle}>
+                      Payment method
+                    </Text>
                     <Text style={styles.sectionSubtitle}>
-                      Secure checkout powered by PayMongo
+                      Secure online payment through PayMongo
                     </Text>
                   </View>
                 </View>
@@ -440,55 +639,96 @@ export default function Checkout() {
                   <View style={styles.radioOuter}>
                     <View style={styles.radioInner} />
                   </View>
+
                   <View style={styles.paymongoLogoMark}>
-                    <Ionicons name="shield-checkmark" size={22} color="#45DDA8" />
+                    <Ionicons
+                      name="shield-checkmark"
+                      size={22}
+                      color="#45DDA8"
+                    />
                   </View>
+
                   <View style={styles.paymongoTextWrap}>
-                    <Text style={styles.paymongoTitle}>PayMongo</Text>
+                    <Text style={styles.paymongoTitle}>
+                      PayMongo Secure Checkout
+                    </Text>
                     <Text style={styles.paymongoSubtitle}>
-                      Available options shown on the secure payment page
+                      GCash, QR Ph and card options may be available on
+                      the secure payment page.
                     </Text>
                   </View>
-                  <Ionicons name="checkmark-circle" size={21} color="#31D7F4" />
+
+                  <Ionicons
+                    name="checkmark-circle"
+                    size={21}
+                    color="#31D7F4"
+                  />
                 </View>
 
                 <View style={styles.secureNote}>
-                  <Ionicons name="lock-closed" size={14} color="#45DDA8" />
+                  <Ionicons
+                    name="lock-closed"
+                    size={14}
+                    color="#45DDA8"
+                  />
                   <Text style={styles.secureNoteText}>
-                    Your payment details will be handled by PayMongo, not stored in MotoVision.
+                    You'll complete your payment on PayMongo's secure
+                    hosted checkout page. Payment is confirmed only
+                    after server verification.
                   </Text>
                 </View>
               </View>
 
+              {/* PICKUP NOTICE */}
               <View style={styles.pickupNotice}>
                 <View style={styles.pickupIcon}>
-                  <Ionicons name="storefront-outline" size={20} color="#FF9B54" />
+                  <Ionicons
+                    name="storefront-outline"
+                    size={20}
+                    color="#FF9B54"
+                  />
                 </View>
+
                 <View style={styles.pickupCopy}>
-                  <Text style={styles.pickupTitle}>Onsite collection only</Text>
+                  <Text style={styles.pickupTitle}>
+                    Onsite collection only
+                  </Text>
                   <Text style={styles.pickupText}>
-                    Your parts must be claimed onsite. Delivery is not available at this time.
+                    Your parts must be claimed onsite. Delivery is not
+                    available at this time.
                   </Text>
                 </View>
               </View>
 
               <View style={styles.bottomReassurance}>
-                <Ionicons name="information-circle-outline" size={17} color="#91A3B5" />
+                <Ionicons
+                  name="information-circle-outline"
+                  size={17}
+                  color="#91A3B5"
+                />
                 <Text style={styles.bottomReassuranceText}>
-                  Check your items and details before continuing. Your order isn't confirmed until payment is verified.
+                  Check your items and details before continuing. Your
+                  order isn't confirmed until payment is verified.
                 </Text>
               </View>
             </ScrollView>
 
+            {/* BOTTOM PAYMENT BAR */}
             <View style={styles.bottomBar}>
               <View style={styles.bottomTotalBlock}>
-                <Text style={styles.bottomTotalLabel}>TOTAL AMOUNT</Text>
-                <Text style={styles.bottomTotal}>{formatPeso(total)}</Text>
+                <Text style={styles.bottomTotalLabel}>
+                  TOTAL AMOUNT
+                </Text>
+                <Text style={styles.bottomTotal}>
+                  {formatPeso(total)}
+                </Text>
               </View>
+
               <TouchableOpacity
                 style={[
                   styles.payButton,
-                  (cartItems.length === 0 || paymentBusy) && styles.payButtonDisabled,
+                  (cartItems.length === 0 || paymentBusy) &&
+                    styles.payButtonDisabled,
                 ]}
                 onPress={handleProceedToPayment}
                 disabled={cartItems.length === 0 || paymentBusy}
@@ -498,9 +738,19 @@ export default function Checkout() {
                   <ActivityIndicator color="#101821" />
                 ) : (
                   <>
-                    <Ionicons name="lock-closed" size={17} color="#101821" />
-                    <Text style={styles.payButtonText}>Proceed to payment</Text>
-                    <Ionicons name="arrow-forward" size={18} color="#101821" />
+                    <Ionicons
+                      name="lock-closed"
+                      size={17}
+                      color="#101821"
+                    />
+                    <Text style={styles.payButtonText}>
+                      Continue to Payment
+                    </Text>
+                    <Ionicons
+                      name="arrow-forward"
+                      size={18}
+                      color="#101821"
+                    />
                   </>
                 )}
               </TouchableOpacity>
@@ -719,16 +969,30 @@ const styles = StyleSheet.create({
   orangeTile: { backgroundColor: "#49362D" },
   greenTile: { backgroundColor: "#204139" },
   sectionTitle: { color: "#F6F9FC", fontSize: 16, fontWeight: "900" },
-  sectionSubtitle: { color: "#A7B6C5", fontSize: 11, marginTop: 3, lineHeight: 15 },
+  sectionSubtitle: {
+    color: "#A7B6C5",
+    fontSize: 11,
+    marginTop: 3,
+    lineHeight: 15,
+  },
   summaryHeaderRight: { alignItems: "flex-end", gap: 4 },
-  summaryHeaderPrice: { color: "#55E1F7", fontSize: 14, fontWeight: "900" },
+  summaryHeaderPrice: {
+    color: "#55E1F7",
+    fontSize: 14,
+    fontWeight: "900",
+  },
   itemsList: { marginTop: 13 },
   emptyCart: {
     alignItems: "center",
     paddingVertical: 22,
     paddingHorizontal: 12,
   },
-  emptyCartTitle: { color: "#F5F8FB", fontSize: 15, fontWeight: "800", marginTop: 8 },
+  emptyCartTitle: {
+    color: "#F5F8FB",
+    fontSize: 15,
+    fontWeight: "800",
+    marginTop: 8,
+  },
   emptyCartText: {
     color: "#A7B6C5",
     fontSize: 12,
@@ -748,14 +1012,21 @@ const styles = StyleSheet.create({
     borderRadius: 11,
     marginTop: 14,
   },
-  browseButtonText: { color: "#101821", fontSize: 12, fontWeight: "900" },
+  browseButtonText: {
+    color: "#101821",
+    fontSize: 12,
+    fontWeight: "900",
+  },
   itemRow: {
     flexDirection: "row",
     alignItems: "center",
     paddingVertical: 12,
     gap: 11,
   },
-  itemDivider: { borderBottomWidth: 1, borderBottomColor: "#354554" },
+  itemDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#354554",
+  },
   itemImageWrap: {
     width: 67,
     height: 67,
@@ -773,8 +1044,18 @@ const styles = StyleSheet.create({
     backgroundColor: "#2B3946",
   },
   itemDetails: { flex: 1 },
-  itemName: { color: "#F6F9FC", fontSize: 12, fontWeight: "800", lineHeight: 17 },
-  itemMetaRow: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 5 },
+  itemName: {
+    color: "#F6F9FC",
+    fontSize: 12,
+    fontWeight: "800",
+    lineHeight: 17,
+  },
+  itemMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 5,
+    marginTop: 5,
+  },
   itemTag: {
     borderRadius: 6,
     backgroundColor: "#2D3C49",
@@ -804,19 +1085,47 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 9,
   },
-  breakdownLabel: { color: "#A7B6C5", fontSize: 12, fontWeight: "600" },
-  breakdownValue: { color: "#DDE6EE", fontSize: 12, fontWeight: "800" },
-  pickupIncluded: { color: "#49DDA9", fontSize: 11, fontWeight: "800" },
-  breakdownDivider: { height: 1, backgroundColor: "#3A4B5A", marginVertical: 5 },
+  breakdownLabel: {
+    color: "#A7B6C5",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  breakdownValue: {
+    color: "#DDE6EE",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  pickupIncluded: {
+    color: "#49DDA9",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  breakdownDivider: {
+    height: 1,
+    backgroundColor: "#3A4B5A",
+    marginVertical: 5,
+  },
   grandTotalRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingTop: 5,
   },
-  grandTotalLabel: { color: "#F5F8FB", fontSize: 13, fontWeight: "900" },
-  grandTotalCaption: { color: "#91A3B5", fontSize: 10, marginTop: 3 },
-  grandTotal: { color: "#55E1F7", fontSize: 20, fontWeight: "900" },
+  grandTotalLabel: {
+    color: "#F5F8FB",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  grandTotalCaption: {
+    color: "#91A3B5",
+    fontSize: 10,
+    marginTop: 3,
+  },
+  grandTotal: {
+    color: "#55E1F7",
+    fontSize: 20,
+    fontWeight: "900",
+  },
   inputLabel: {
     color: "#AFC0CF",
     fontSize: 10,
@@ -883,8 +1192,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   paymongoTextWrap: { flex: 1 },
-  paymongoTitle: { color: "#F6FAFC", fontSize: 14, fontWeight: "900" },
-  paymongoSubtitle: { color: "#B6C5D2", fontSize: 10, lineHeight: 15, marginTop: 3 },
+  paymongoTitle: {
+    color: "#F6FAFC",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  paymongoSubtitle: {
+    color: "#B6C5D2",
+    fontSize: 10,
+    lineHeight: 15,
+    marginTop: 3,
+  },
   secureNote: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -892,7 +1210,12 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingHorizontal: 2,
   },
-  secureNoteText: { flex: 1, color: "#A7B6C5", fontSize: 10, lineHeight: 15 },
+  secureNoteText: {
+    flex: 1,
+    color: "#A7B6C5",
+    fontSize: 10,
+    lineHeight: 15,
+  },
   pickupNotice: {
     flexDirection: "row",
     gap: 11,
@@ -913,8 +1236,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   pickupCopy: { flex: 1 },
-  pickupTitle: { color: "#FFE1CA", fontSize: 13, fontWeight: "900" },
-  pickupText: { color: "#D1BEB1", fontSize: 11, lineHeight: 16, marginTop: 4 },
+  pickupTitle: {
+    color: "#FFE1CA",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  pickupText: {
+    color: "#D1BEB1",
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 4,
+  },
   bottomReassurance: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -923,7 +1255,12 @@ const styles = StyleSheet.create({
     marginTop: 1,
     marginBottom: 8,
   },
-  bottomReassuranceText: { flex: 1, color: "#9EADBA", fontSize: 10, lineHeight: 15 },
+  bottomReassuranceText: {
+    flex: 1,
+    color: "#9EADBA",
+    fontSize: 10,
+    lineHeight: 15,
+  },
   bottomBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -937,8 +1274,18 @@ const styles = StyleSheet.create({
     borderTopColor: "#3A4B5A",
   },
   bottomTotalBlock: { flexShrink: 0 },
-  bottomTotalLabel: { color: "#A5B5C4", fontSize: 9, fontWeight: "900", letterSpacing: 0.8 },
-  bottomTotal: { color: "#55E1F7", fontSize: 20, fontWeight: "900", marginTop: 4 },
+  bottomTotalLabel: {
+    color: "#A5B5C4",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+  bottomTotal: {
+    color: "#55E1F7",
+    fontSize: 20,
+    fontWeight: "900",
+    marginTop: 4,
+  },
   payButton: {
     flex: 1,
     minHeight: 51,

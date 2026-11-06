@@ -1,3 +1,4 @@
+
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -8,7 +9,7 @@ import {
   signOut,
 } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Alert,
   Image,
@@ -23,6 +24,9 @@ import {
 
 import { auth, db } from '../../firebaseConfig';
 
+const MAX_ATTEMPTS = 4;
+const LOCKOUT_DURATION = 60;
+
 export default function LoginScreen() {
   const router = useRouter();
 
@@ -32,36 +36,71 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Keep this aligned with the administrator account configured for MotoVision.
-  const ADMIN_EMAIL = 'fishmaker1215@gmail.com';
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
+
+  const remainingAttempts = Math.max(
+    0,
+    MAX_ATTEMPTS - failedAttempts
+  );
+
+  // Countdown for the temporary login lockout.
+  useEffect(() => {
+    if (lockoutSeconds <= 0) return;
+
+    const timer = setTimeout(() => {
+      if (lockoutSeconds === 1) {
+        setLockoutSeconds(0);
+        setFailedAttempts(0);
+        setError('');
+      } else {
+        setLockoutSeconds((previous) => previous - 1);
+      }
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [lockoutSeconds]);
 
   const handleLogin = async () => {
     setError('');
 
-    if (!email.trim() || !password) {
-      setError('Please fill in all fields');
+    if (isLoading) return;
+
+    if (lockoutSeconds > 0) {
+      setError(
+        `Please wait ${lockoutSeconds} seconds before trying again.`
+      );
       return;
     }
 
-    if (isLoading) return;
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!normalizedEmail || !password) {
+      setError('Please fill in all fields.');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
       const userCredential = await signInWithEmailAndPassword(
         auth,
-        email.trim(),
+        normalizedEmail,
         password
       );
 
       const user = userCredential.user;
 
-      // Refresh the user's profile so the verification status is up to date.
+      // A successful authentication resets the failed-attempt counter.
+      setFailedAttempts(0);
+
+      // Refresh the user's profile so verification status is up to date.
       await reload(user);
 
       if (!user.emailVerified) {
         Alert.alert(
           'Verify your email first',
-          `Your MotoVision account (${user.email ?? email.trim()}) has not been verified yet. Check your inbox and spam folder. You can also resend the verification email below.`,
+          `Your MotoVision account (${user.email ?? normalizedEmail}) has not been verified yet. Check your inbox and spam folder. You can also resend the verification email below.`,
           [
             {
               text: 'Not now',
@@ -76,6 +115,7 @@ export default function LoginScreen() {
                 void (async () => {
                   try {
                     await sendEmailVerification(user);
+
                     Alert.alert(
                       'Verification email sent',
                       'Check your inbox and spam folder, open the verification link, then return to MotoVision and log in again.'
@@ -99,13 +139,36 @@ export default function LoginScreen() {
         return;
       }
 
+      // Retrieve the user's assigned role from Firestore.
       const userDoc = await getDoc(doc(db, 'users', user.uid));
-      const role = userDoc.exists() ? userDoc.data().role : '';
 
-      if (role === 'admin' || user.email === ADMIN_EMAIL) {
+      if (!userDoc.exists()) {
+        await signOut(auth);
+
+        Alert.alert(
+          'Account profile not found',
+          'Your account profile could not be found. Please contact the administrator.'
+        );
+
+        return;
+      }
+
+      const role = userDoc.data().role;
+
+      // Route users according to their assigned role.
+      if (role === 'admin') {
         router.replace('/admin');
-      } else {
+      } else if (role === 'mechanic') {
+        router.replace('/mechanic');
+      } else if (role === 'customer') {
         router.replace('/(tabs)');
+      } else {
+        await signOut(auth);
+
+        Alert.alert(
+          'Unauthorized account',
+          'Your account does not have a valid assigned role. Please contact the administrator.'
+        );
       }
     } catch (err: any) {
       console.log('LOGIN ERROR CODE:', err.code);
@@ -116,13 +179,40 @@ export default function LoginScreen() {
         err.code === 'auth/wrong-password' ||
         err.code === 'auth/user-not-found'
       ) {
-        setError('Invalid email or password.');
+        const nextFailedAttempts = failedAttempts + 1;
+        setFailedAttempts(nextFailedAttempts);
+
+        const attemptsLeft = MAX_ATTEMPTS - nextFailedAttempts;
+
+        if (attemptsLeft <= 0) {
+          setLockoutSeconds(LOCKOUT_DURATION);
+
+          setError(
+            `You have used all ${MAX_ATTEMPTS} login attempts. Please wait ${LOCKOUT_DURATION} seconds before trying again.`
+          );
+        } else {
+          setError(
+            `Invalid email or password. ${attemptsLeft} ${
+              attemptsLeft === 1 ? 'attempt' : 'attempts'
+            } remaining.`
+          );
+        }
+      } else if (err.code === 'auth/too-many-requests') {
+        // Firebase may independently throttle repeated authentication attempts.
+        setFailedAttempts(MAX_ATTEMPTS);
+        setLockoutSeconds(LOCKOUT_DURATION);
+
+        setError(
+          'Too many login attempts. Please wait before trying again.'
+        );
+      } else if (err.code === 'auth/invalid-email') {
+        setError('Please enter a valid email address.');
       } else if (err.code === 'permission-denied') {
         setError('Signed in, but Firestore access was denied.');
-      } else if (err.code === 'auth/too-many-requests') {
-        setError('Too many attempts. Please wait a while and try again.');
       } else {
-        setError(err.message || 'Something went wrong.');
+        setError(
+          err.message || 'Something went wrong. Please try again.'
+        );
       }
     } finally {
       setIsLoading(false);
@@ -135,6 +225,8 @@ export default function LoginScreen() {
       'Use the assigned administrator email and password, then press LOGIN.'
     );
   };
+
+  const isLocked = lockoutSeconds > 0;
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
@@ -161,16 +253,26 @@ export default function LoginScreen() {
               onPress={showAdminHint}
               style={styles.adminIconButton}
             >
-              <Ionicons name="construct-outline" size={20} color="#FFFFFF" />
+              <Ionicons
+                name="construct-outline"
+                size={20}
+                color="#FFFFFF"
+              />
             </TouchableOpacity>
 
             <Text style={styles.cardTitle}>Welcome Back</Text>
+
             <Text style={styles.cardSubtitle}>
               Sign in to continue customizing your ride
             </Text>
 
             <View style={styles.inputBox}>
-              <Ionicons name="mail-outline" size={19} color="#9CA3AF" />
+              <Ionicons
+                name="mail-outline"
+                size={19}
+                color="#9CA3AF"
+              />
+
               <TextInput
                 placeholder="Email"
                 placeholderTextColor="#747B86"
@@ -180,12 +282,20 @@ export default function LoginScreen() {
                 autoComplete="email"
                 style={styles.input}
                 value={email}
-                onChangeText={setEmail}
+                onChangeText={(value) => {
+                  setEmail(value);
+                  setError('');
+                }}
+                editable={!isLocked && !isLoading}
               />
             </View>
 
             <View style={styles.passwordContainer}>
-              <Ionicons name="lock-closed-outline" size={19} color="#9CA3AF" />
+              <Ionicons
+                name="lock-closed-outline"
+                size={19}
+                color="#9CA3AF"
+              />
 
               <TextInput
                 placeholder="Password"
@@ -194,12 +304,17 @@ export default function LoginScreen() {
                 autoComplete="current-password"
                 style={styles.passwordInput}
                 value={password}
-                onChangeText={setPassword}
+                onChangeText={(value) => {
+                  setPassword(value);
+                  setError('');
+                }}
+                editable={!isLocked && !isLoading}
               />
 
               <TouchableOpacity
                 onPress={() => setShowPassword(!showPassword)}
                 style={styles.eyeButton}
+                disabled={isLocked || isLoading}
               >
                 <Ionicons
                   name={showPassword ? 'eye-off' : 'eye'}
@@ -209,31 +324,71 @@ export default function LoginScreen() {
               </TouchableOpacity>
             </View>
 
-            {error ? <Text style={styles.error}>{error}</Text> : null}
+            {/* LOGIN ATTEMPTS COUNTER */}
+            <View style={styles.attemptsContainer}>
+              <Ionicons
+                name={isLocked ? 'time-outline' : 'shield-checkmark-outline'}
+                size={15}
+                color={isLocked ? '#F87171' : '#9CA3AF'}
+              />
+
+              <Text
+                style={[
+                  styles.attemptsText,
+                  isLocked && styles.lockedText,
+                ]}
+              >
+                {isLocked
+                  ? `Login locked. Try again in ${lockoutSeconds}s`
+                  : `${remainingAttempts} login ${
+                      remainingAttempts === 1 ? 'attempt' : 'attempts'
+                    } remaining`}
+              </Text>
+            </View>
+
+            {error ? (
+              <Text style={styles.error}>{error}</Text>
+            ) : null}
 
             <TouchableOpacity
               activeOpacity={0.85}
               onPress={handleLogin}
-              disabled={isLoading}
+              disabled={isLoading || isLocked}
             >
               <LinearGradient
-                colors={isLoading ? ['#6B7280', '#374151'] : ['#E50914', '#7A0C12']}
+                colors={
+                  isLoading || isLocked
+                    ? ['#6B7280', '#374151']
+                    : ['#E50914', '#7A0C12']
+                }
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={styles.loginButton}
               >
                 <Text style={styles.loginText}>
-                  {isLoading ? 'PLEASE WAIT...' : 'LOGIN'}
+                  {isLoading
+                    ? 'PLEASE WAIT...'
+                    : isLocked
+                    ? `LOCKED (${lockoutSeconds}s)`
+                    : 'LOGIN'}
                 </Text>
-                {!isLoading ? (
-                  <Ionicons name="arrow-forward" size={18} color="#fff" />
+
+                {!isLoading && !isLocked ? (
+                  <Ionicons
+                    name="arrow-forward"
+                    size={18}
+                    color="#fff"
+                  />
                 ) : null}
               </LinearGradient>
             </TouchableOpacity>
           </LinearGradient>
         </View>
 
-        <TouchableOpacity onPress={() => router.push('/(auth)/signup')}>
+        <TouchableOpacity
+          onPress={() => router.push('/(auth)/signup')}
+          disabled={isLocked}
+        >
           <Text style={styles.createAccount}>Create an account</Text>
         </TouchableOpacity>
       </View>
@@ -344,7 +499,7 @@ const styles = StyleSheet.create({
     borderColor: '#252A33',
     borderRadius: 15,
     backgroundColor: '#090D13',
-    marginBottom: 14,
+    marginBottom: 8,
     height: 54,
     paddingLeft: 14,
   },
@@ -362,6 +517,25 @@ const styles = StyleSheet.create({
     height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+
+  attemptsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    marginTop: 3,
+    marginBottom: 10,
+  },
+
+  attemptsText: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  lockedText: {
+    color: '#F87171',
   },
 
   loginButton: {

@@ -2,6 +2,7 @@
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 require("dotenv").config();
 
 const { initializeApp, cert, getApps } = require("firebase-admin/app");
@@ -36,6 +37,67 @@ const db = getFirestore();
 const firebaseAuth = getAuth();
 
 app.use(cors());
+
+// --------------------------------------------------
+// EMAIL / OTP CONFIGURATION
+// --------------------------------------------------
+
+function getMailTransporter() {
+  const emailUser = process.env.EMAIL_USER;
+  const emailPassword = process.env.EMAIL_APP_PASSWORD;
+
+  if (!emailUser || !emailPassword) {
+    throw new Error("Email sending is not configured.");
+  }
+
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: emailUser,
+      pass: emailPassword.replace(/\s/g, ""),
+    },
+  });
+}
+
+function getOtpSecret() {
+  const secret = process.env.OTP_SECRET;
+
+  if (!secret || secret.length < 32) {
+    throw new Error("OTP_SECRET is missing or too short.");
+  }
+
+  return secret;
+}
+
+function createOtpHash(challengeId, uid, code) {
+  return crypto
+    .createHmac("sha256", getOtpSecret())
+    .update(`${challengeId}:${uid}:${code}`)
+    .digest("hex");
+}
+
+function safeCompareHex(first, second) {
+  if (
+    typeof first !== "string" ||
+    typeof second !== "string" ||
+    !/^[a-f0-9]{64}$/i.test(first) ||
+    !/^[a-f0-9]{64}$/i.test(second)
+  ) {
+    return false;
+  }
+
+  const firstBuffer = Buffer.from(first, "hex");
+  const secondBuffer = Buffer.from(second, "hex");
+
+  return (
+    firstBuffer.length === secondBuffer.length &&
+    crypto.timingSafeEqual(firstBuffer, secondBuffer)
+  );
+}
+
+// --------------------------------------------------
+// PAYMONGO WEBHOOK
+// --------------------------------------------------
 
 // Keep the raw webhook body available for signature verification.
 app.post(
@@ -77,7 +139,6 @@ app.post(
         return res.status(400).send("Missing webhook signature.");
       }
 
-      // PayMongo signs the timestamp followed by the raw request body.
       const signedPayload = Buffer.concat([
         Buffer.from(`${timestamp}.`),
         req.body,
@@ -99,7 +160,6 @@ app.post(
       }
 
       const payload = JSON.parse(req.body.toString("utf8"));
-
       const eventContainer = payload.data || {};
 
       const eventType =
@@ -130,8 +190,6 @@ app.post(
         return res.status(400).send("Missing checkout session details.");
       }
 
-      // Locate the order by its server-created order ID, session ID,
-      // or reference number. Never trust a client-supplied payment status.
       let orderRef = null;
 
       if (typeof orderId === "string" && orderId) {
@@ -248,6 +306,7 @@ async function requireFirebaseUser(req, res, next) {
     req.firebaseUser = {
       uid: token.uid,
       email: token.email || null,
+      emailVerified: token.email_verified === true,
     };
 
     return next();
@@ -258,7 +317,301 @@ async function requireFirebaseUser(req, res, next) {
   }
 }
 
-// Only users with an admin role in Firestore can use admin endpoints.
+// --------------------------------------------------
+// LOGIN OTP
+// --------------------------------------------------
+
+// Request an OTP after Firebase has checked the password.
+// The app must sign out of this temporary Firebase session
+// while the user enters the OTP.
+
+app.post(
+  "/api/auth/request-login-otp",
+  requireFirebaseUser,
+  async (req, res) => {
+    let challengeRef = null;
+
+    try {
+      const { uid, email, emailVerified } = req.firebaseUser;
+
+      if (!email || !emailVerified) {
+        return res.status(403).json({
+          error: "Please verify your email address before logging in.",
+        });
+      }
+
+      if (
+        !process.env.EMAIL_USER ||
+        !process.env.EMAIL_APP_PASSWORD ||
+        !process.env.OTP_SECRET ||
+        process.env.OTP_SECRET.length < 32
+      ) {
+        console.error("OTP environment variables are not configured.");
+
+        return res.status(503).json({
+          error: "Login verification is temporarily unavailable.",
+        });
+      }
+
+      // Limit each account to 3 OTP requests per 15 minutes.
+      const now = Date.now();
+      const rateLimitRef = db
+        .collection("loginOtpRateLimits")
+        .doc(uid);
+
+      const rateLimitAllowed = await db.runTransaction(
+        async (transaction) => {
+          const snapshot = await transaction.get(rateLimitRef);
+
+          let windowStart = now;
+          let count = 0;
+
+          if (snapshot.exists) {
+            const data = snapshot.data();
+
+            windowStart = Number(data.windowStartMs) || now;
+            count = Number(data.count) || 0;
+          }
+
+          const windowDuration = 15 * 60 * 1000;
+
+          if (now - windowStart >= windowDuration) {
+            windowStart = now;
+            count = 0;
+          }
+
+          if (count >= 3) {
+            return false;
+          }
+
+          transaction.set(rateLimitRef, {
+            windowStartMs: windowStart,
+            count: count + 1,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+
+          return true;
+        }
+      );
+
+      if (!rateLimitAllowed) {
+        return res.status(429).json({
+          error: "Too many verification requests. Please try again later.",
+        });
+      }
+
+      const code = crypto
+        .randomInt(0, 1000000)
+        .toString()
+        .padStart(6, "0");
+
+      const challengeId = crypto.randomBytes(32).toString("hex");
+
+      challengeRef = db
+        .collection("loginOtpChallenges")
+        .doc(challengeId);
+
+      const otpHash = createOtpHash(challengeId, uid, code);
+
+      await challengeRef.set({
+        uid,
+        email,
+        otpHash,
+        attempts: 0,
+        createdAt: FieldValue.serverTimestamp(),
+        expiresAt: new Date(now + 5 * 60 * 1000),
+      });
+
+      const transporter = getMailTransporter();
+
+      await transporter.sendMail({
+        from: `"MotoVision" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: "Your MotoVision login verification code",
+        text:
+          `Your MotoVision login verification code is ${code}.\n\n` +
+          "This code expires in 5 minutes. " +
+          "Do not share this code with anyone.",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px;">
+            <h2 style="color: #222;">MotoVision</h2>
+            <h3>Login verification</h3>
+            <p>Use the following code to complete your login:</p>
+            <div style="font-size: 32px; font-weight: bold; letter-spacing: 8px; padding: 16px 0;">
+              ${code}
+            </div>
+            <p>This code expires in <strong>5 minutes</strong>.</p>
+            <p>If you did not try to log in, you can ignore this email.</p>
+            <p style="color: #777; font-size: 12px;">MotoVision account security</p>
+          </div>
+        `,
+      });
+
+      console.log(`Login OTP sent for account ${uid}.`);
+
+      return res.status(200).json({
+        message: "A verification code has been sent to your email.",
+        challengeId,
+        expiresIn: 300,
+      });
+    } catch (error) {
+      if (challengeRef) {
+        try {
+          await challengeRef.delete();
+        } catch {
+          // Ignore cleanup errors.
+        }
+      }
+
+      console.error("OTP request failed:", error.message);
+
+      return res.status(500).json({
+        error: "Could not send your verification code. Please try again.",
+      });
+    }
+  }
+);
+
+// Verify the code and issue a Firebase custom token.
+// This endpoint does not require an existing Firebase login.
+
+app.post("/api/auth/verify-login-otp", async (req, res) => {
+  try {
+    const challengeId =
+      typeof req.body?.challengeId === "string"
+        ? req.body.challengeId.trim()
+        : "";
+
+    const code =
+      typeof req.body?.code === "string"
+        ? req.body.code.trim()
+        : "";
+
+    if (
+      !/^[a-f0-9]{64}$/i.test(challengeId) ||
+      !/^\d{6}$/.test(code)
+    ) {
+      return res.status(400).json({
+        error: "Please enter a valid 6-digit verification code.",
+      });
+    }
+
+    const challengeRef = db
+      .collection("loginOtpChallenges")
+      .doc(challengeId);
+
+    const verification = await db.runTransaction(
+      async (transaction) => {
+        const snapshot = await transaction.get(challengeRef);
+
+        if (!snapshot.exists) {
+          return { status: "invalid" };
+        }
+
+        const data = snapshot.data();
+
+        if (
+          !data.expiresAt ||
+          data.expiresAt.toMillis() <= Date.now()
+        ) {
+          transaction.delete(challengeRef);
+          return { status: "expired" };
+        }
+
+        const attempts = Number(data.attempts) || 0;
+
+        if (attempts >= 5) {
+          transaction.delete(challengeRef);
+          return { status: "locked" };
+        }
+
+        const submittedHash = createOtpHash(
+          challengeId,
+          data.uid,
+          code
+        );
+
+        if (!safeCompareHex(submittedHash, data.otpHash)) {
+          if (attempts + 1 >= 5) {
+            transaction.delete(challengeRef);
+            return { status: "locked" };
+          }
+
+          transaction.update(challengeRef, {
+            attempts: attempts + 1,
+          });
+
+          return {
+            status: "incorrect",
+            remainingAttempts: 4 - attempts,
+          };
+        }
+
+        // Consume the challenge so it cannot be reused.
+        transaction.delete(challengeRef);
+
+        return {
+          status: "verified",
+          uid: data.uid,
+        };
+      }
+    );
+
+    if (verification.status === "expired") {
+      return res.status(400).json({
+        error: "Your verification code has expired. Please log in again.",
+      });
+    }
+
+    if (verification.status === "locked") {
+      return res.status(429).json({
+        error: "Too many incorrect attempts. Please log in again.",
+      });
+    }
+
+    if (verification.status === "incorrect") {
+      return res.status(400).json({
+        error: "Incorrect verification code.",
+        remainingAttempts: verification.remainingAttempts,
+      });
+    }
+
+    if (verification.status !== "verified") {
+      return res.status(400).json({
+        error: "Invalid verification request. Please log in again.",
+      });
+    }
+
+    // Confirm the account still exists and is not disabled.
+    const user = await firebaseAuth.getUser(verification.uid);
+
+    if (user.disabled || !user.emailVerified) {
+      return res.status(403).json({
+        error: "This account cannot currently log in.",
+      });
+    }
+
+    const customToken = await firebaseAuth.createCustomToken(
+      verification.uid
+    );
+
+    return res.status(200).json({
+      message: "Login verified successfully.",
+      token: customToken,
+    });
+  } catch (error) {
+    console.error("OTP verification failed:", error.message);
+
+    return res.status(500).json({
+      error: "Could not verify your code. Please try again.",
+    });
+  }
+});
+
+// --------------------------------------------------
+// ADMIN AUTHORIZATION
+// --------------------------------------------------
+
 async function requireAdmin(req, res, next) {
   try {
     const adminDoc = await db
@@ -286,7 +639,6 @@ async function requireAdmin(req, res, next) {
 // MECHANIC MANAGEMENT
 // --------------------------------------------------
 
-// GET: List all currently authorized mechanics.
 app.get(
   "/api/admin/mechanics",
   requireFirebaseUser,
@@ -322,9 +674,7 @@ app.get(
         })
       );
 
-      mechanics.sort((a, b) =>
-        a.email.localeCompare(b.email)
-      );
+      mechanics.sort((a, b) => a.email.localeCompare(b.email));
 
       return res.status(200).json({
         mechanics,
@@ -340,7 +690,6 @@ app.get(
   }
 );
 
-// POST: Authorize an already-registered MotoVision account by email.
 app.post(
   "/api/admin/mechanics/authorize",
   requireFirebaseUser,
@@ -375,10 +724,7 @@ app.post(
         throw error;
       }
 
-      const targetRef = db
-        .collection("users")
-        .doc(targetUser.uid);
-
+      const targetRef = db.collection("users").doc(targetUser.uid);
       const targetSnapshot = await targetRef.get();
 
       if (!targetSnapshot.exists) {
@@ -441,7 +787,6 @@ app.post(
   }
 );
 
-// DELETE: Revoke mechanic access without deleting the Firebase account.
 app.delete(
   "/api/admin/mechanics/:uid",
   requireFirebaseUser,
@@ -529,7 +874,6 @@ app.delete(
 // PRODUCT PRICING
 // --------------------------------------------------
 
-// Prices are determined by the backend, never by the app.
 const staticProducts = {
   c3: {
     name: "Click 160 Front Fender Glossy Black",
@@ -565,7 +909,6 @@ function getStaticProduct(productId) {
     };
   }
 
-  // Matches IDs generated by the current catalog.
   const match = productId.match(
     /^(click160-front-side|click160-front-cover)_(Matte Red|Matte Black)(?:_(Left|Right))?$/
   );

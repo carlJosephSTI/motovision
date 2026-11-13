@@ -3,8 +3,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import {
-  reload,
-  sendEmailVerification,
   signInWithEmailAndPassword,
   signOut,
 } from 'firebase/auth';
@@ -27,6 +25,11 @@ import { auth, db } from '../../firebaseConfig';
 const MAX_ATTEMPTS = 4;
 const LOCKOUT_DURATION = 60;
 
+type PendingLogin = {
+  email: string;
+  password: string;
+};
+
 export default function LoginScreen() {
   const router = useRouter();
 
@@ -39,12 +42,15 @@ export default function LoginScreen() {
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [lockoutSeconds, setLockoutSeconds] = useState(0);
 
+  // Credentials are held temporarily while the demo confirmation is pending.
+  const [pendingLogin, setPendingLogin] = useState<PendingLogin | null>(null);
+
   const remainingAttempts = Math.max(
     0,
     MAX_ATTEMPTS - failedAttempts
   );
 
-  // Countdown for the temporary login lockout.
+  // Login lockout countdown.
   useEffect(() => {
     if (lockoutSeconds <= 0) return;
 
@@ -61,6 +67,30 @@ export default function LoginScreen() {
     return () => clearTimeout(timer);
   }, [lockoutSeconds]);
 
+  // Redirect users according to their Firestore role.
+  const redirectByRole = (role: string) => {
+    switch (role) {
+      case 'admin':
+        router.replace('/admin');
+        break;
+
+      case 'mechanic':
+        router.replace('/mechanic');
+        break;
+
+      case 'customer':
+        router.replace('/(tabs)');
+        break;
+
+      default:
+        throw new Error(
+          'Your account does not have a valid assigned role. Please contact the administrator.'
+        );
+    }
+  };
+
+  // STEP 1: Authenticate the email and password.
+  // STEP 2: Sign out and require the demo email confirmation.
   const handleLogin = async () => {
     setError('');
 
@@ -82,6 +112,8 @@ export default function LoginScreen() {
 
     setIsLoading(true);
 
+    let authenticationSucceeded = false;
+
     try {
       const userCredential = await signInWithEmailAndPassword(
         auth,
@@ -89,90 +121,53 @@ export default function LoginScreen() {
         password
       );
 
-      const user = userCredential.user;
+      authenticationSucceeded = true;
 
-      // A successful authentication resets the failed-attempt counter.
+      // Keep the credentials temporarily for the second sign-in.
+      setPendingLogin({
+        email: normalizedEmail,
+        password,
+      });
+
+      // Do not leave the user authenticated while confirmation is pending.
+      await signOut(auth);
+
+      // DEMO ONLY:
+      // This simulates the email confirmation step.
+      // It does not send or verify an actual sign-in email.
+      Alert.alert(
+        'Check Your Email',
+        `A sign-in confirmation step is ready for ${normalizedEmail}.\n\nFor this demonstration, confirm below after simulating the email-link click.`,
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => {
+              setPendingLogin(null);
+            },
+          },
+          {
+            text: "I've clicked the email link",
+            onPress: () => {
+              void completeDemoLogin();
+            },
+          },
+        ],
+        { cancelable: false }
+      );
+
       setFailedAttempts(0);
-
-      // Refresh the user's profile so verification status is up to date.
-      await reload(user);
-
-      if (!user.emailVerified) {
-        Alert.alert(
-          'Verify your email first',
-          `Your MotoVision account (${user.email ?? normalizedEmail}) has not been verified yet. Check your inbox and spam folder. You can also resend the verification email below.`,
-          [
-            {
-              text: 'Not now',
-              style: 'cancel',
-              onPress: () => {
-                void signOut(auth);
-              },
-            },
-            {
-              text: 'Resend email',
-              onPress: () => {
-                void (async () => {
-                  try {
-                    await sendEmailVerification(user);
-
-                    Alert.alert(
-                      'Verification email sent',
-                      'Check your inbox and spam folder, open the verification link, then return to MotoVision and log in again.'
-                    );
-                  } catch (resendError: any) {
-                    Alert.alert(
-                      'Could not send email',
-                      resendError?.message ||
-                        'Please try again later or check your internet connection.'
-                    );
-                  } finally {
-                    await signOut(auth);
-                  }
-                })();
-              },
-            },
-          ],
-          { cancelable: false }
-        );
-
-        return;
-      }
-
-      // Retrieve the user's assigned role from Firestore.
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-
-      if (!userDoc.exists()) {
-        await signOut(auth);
-
-        Alert.alert(
-          'Account profile not found',
-          'Your account profile could not be found. Please contact the administrator.'
-        );
-
-        return;
-      }
-
-      const role = userDoc.data().role;
-
-      // Route users according to their assigned role.
-      if (role === 'admin') {
-        router.replace('/admin');
-      } else if (role === 'mechanic') {
-        router.replace('/mechanic');
-      } else if (role === 'customer') {
-        router.replace('/(tabs)');
-      } else {
-        await signOut(auth);
-
-        Alert.alert(
-          'Unauthorized account',
-          'Your account does not have a valid assigned role. Please contact the administrator.'
-        );
-      }
     } catch (err: any) {
       console.log('LOGIN ERROR CODE:', err.code);
       console.log('LOGIN ERROR MESSAGE:', err.message);
+
+      if (authenticationSucceeded) {
+        try {
+          await signOut(auth);
+        } catch (signOutError) {
+          console.log('Sign-out error:', signOutError);
+        }
+      }
 
       if (
         err.code === 'auth/invalid-credential' ||
@@ -198,7 +193,6 @@ export default function LoginScreen() {
           );
         }
       } else if (err.code === 'auth/too-many-requests') {
-        // Firebase may independently throttle repeated authentication attempts.
         setFailedAttempts(MAX_ATTEMPTS);
         setLockoutSeconds(LOCKOUT_DURATION);
 
@@ -207,8 +201,6 @@ export default function LoginScreen() {
         );
       } else if (err.code === 'auth/invalid-email') {
         setError('Please enter a valid email address.');
-      } else if (err.code === 'permission-denied') {
-        setError('Signed in, but Firestore access was denied.');
       } else {
         setError(
           err.message || 'Something went wrong. Please try again.'
@@ -219,10 +211,83 @@ export default function LoginScreen() {
     }
   };
 
+  // STEP 3: After the user confirms, authenticate again.
+  // STEP 4: Retrieve the account role and redirect.
+  const completeDemoLogin = async () => {
+    if (!pendingLogin || isLoading) return;
+
+    setIsLoading(true);
+
+    try {
+      const userCredential = await signInWithEmailAndPassword(
+        auth,
+        pendingLogin.email,
+        pendingLogin.password
+      );
+
+      const user = userCredential.user;
+
+      const userDoc = await getDoc(
+        doc(db, 'users', user.uid)
+      );
+
+      if (!userDoc.exists()) {
+        await signOut(auth);
+
+        throw new Error(
+          'Your account profile could not be found. Please contact the administrator.'
+        );
+      }
+
+      const role = userDoc.data().role;
+
+      if (
+        role !== 'admin' &&
+        role !== 'mechanic' &&
+        role !== 'customer'
+      ) {
+        await signOut(auth);
+
+        throw new Error(
+          'Your account does not have a valid assigned role. Please contact the administrator.'
+        );
+      }
+
+      setPendingLogin(null);
+      setPassword('');
+      setFailedAttempts(0);
+      setError('');
+
+      redirectByRole(role);
+    } catch (err: any) {
+      console.log('CONFIRMATION LOGIN ERROR:', err.code);
+      console.log('CONFIRMATION LOGIN MESSAGE:', err.message);
+
+      try {
+        await signOut(auth);
+      } catch (signOutError) {
+        console.log('Sign-out error:', signOutError);
+      }
+
+      setPendingLogin(null);
+
+      setError(
+        err.message || 'Could not complete login. Please try again.'
+      );
+
+      Alert.alert(
+        'Login Failed',
+        err.message || 'Could not complete login. Please try again.'
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const showAdminHint = () => {
     Alert.alert(
       'Admin Access',
-      'Use the assigned administrator email and password, then press LOGIN.'
+      'Use the assigned administrator email and password, then press LOGIN. Admin accounts will be directed to the administrator dashboard after confirmation.'
     );
   };
 
@@ -260,7 +325,9 @@ export default function LoginScreen() {
               />
             </TouchableOpacity>
 
-            <Text style={styles.cardTitle}>Welcome Back</Text>
+            <Text style={styles.cardTitle}>
+              Welcome Back
+            </Text>
 
             <Text style={styles.cardSubtitle}>
               Sign in to continue customizing your ride
@@ -324,10 +391,13 @@ export default function LoginScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* LOGIN ATTEMPTS COUNTER */}
             <View style={styles.attemptsContainer}>
               <Ionicons
-                name={isLocked ? 'time-outline' : 'shield-checkmark-outline'}
+                name={
+                  isLocked
+                    ? 'time-outline'
+                    : 'shield-checkmark-outline'
+                }
                 size={15}
                 color={isLocked ? '#F87171' : '#9CA3AF'}
               />
@@ -341,7 +411,9 @@ export default function LoginScreen() {
                 {isLocked
                   ? `Login locked. Try again in ${lockoutSeconds}s`
                   : `${remainingAttempts} login ${
-                      remainingAttempts === 1 ? 'attempt' : 'attempts'
+                      remainingAttempts === 1
+                        ? 'attempt'
+                        : 'attempts'
                     } remaining`}
               </Text>
             </View>
@@ -387,9 +459,11 @@ export default function LoginScreen() {
 
         <TouchableOpacity
           onPress={() => router.push('/(auth)/signup')}
-          disabled={isLocked}
+          disabled={isLocked || isLoading}
         >
-          <Text style={styles.createAccount}>Create an account</Text>
+          <Text style={styles.createAccount}>
+            Create an account
+          </Text>
         </TouchableOpacity>
       </View>
     </TouchableWithoutFeedback>
